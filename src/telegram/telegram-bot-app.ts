@@ -44,7 +44,9 @@ const INTERACTIVE_MESSAGE_KEYS = [
 ] as const;
 
 export const SESSION_SWITCH_CALLBACK_PREFIX = "switch:";
+export const SESSION_SELECTION_PAGE_CALLBACK_PREFIX = "sessions:page:";
 export const SESSION_SELECTION_CANCEL_CALLBACK_DATA = "sessions:cancel";
+const SESSION_SELECTION_PAGE_SIZE = 5;
 
 export class TelegramBotApp {
 	private readonly bot: Telegraf<BotContext>;
@@ -125,12 +127,12 @@ export class TelegramBotApp {
 		this.bot.command("sessions", async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
 				const sessions = await this.coordinator.listSessions();
-				const keyboard = buildSessionKeyboard(sessions);
-				if (keyboard) {
-					await ctx.reply(formatSessionsText(sessions), keyboard);
+				const popup = buildSessionSelectionPopup(sessions);
+				if (popup.keyboard) {
+					await ctx.reply(popup.text, popup.keyboard);
 					return;
 				}
-				await ctx.reply(formatSessionsText(sessions));
+				await ctx.reply(popup.text);
 			});
 		});
 
@@ -155,6 +157,20 @@ export class TelegramBotApp {
 			await this.runWithErrorHandling(ctx, async () => {
 				const session = await this.coordinator.switchSessionByReference(target);
 				await ctx.reply(formatSelectionChangedText(session));
+			});
+		});
+
+		this.bot.action(new RegExp(`^${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}(\\d+)$`), async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				const pageIndex = parseSessionSelectionPageIndex(ctx.match[1]);
+				const sessions = await this.coordinator.listSessions();
+				const popup = buildSessionSelectionPopup(sessions, pageIndex);
+				if (popup.keyboard) {
+					await ctx.editMessageText(popup.text, popup.keyboard);
+				} else {
+					await ctx.editMessageText(popup.text);
+				}
+				await ctx.answerCbQuery();
 			});
 		});
 
@@ -227,18 +243,102 @@ export class TelegramBotApp {
 	}
 }
 
-export function buildSessionKeyboard(sessions: SessionCatalogEntry[]) {
-	const switchableSessions = sessions.filter((session) => session.source === "pi");
+export function buildSessionKeyboard(sessions: SessionCatalogEntry[], pageIndex = 0) {
+	const switchableSessions = getSwitchableSessions(sessions);
 	if (switchableSessions.length === 0) {
 		return undefined;
 	}
 
-	const rows = switchableSessions.map((session) => [
+	const pageCount = getSessionSelectionPageCount(switchableSessions.length);
+	const normalizedPageIndex = normalizeSessionSelectionPageIndex(pageIndex, switchableSessions.length);
+	const pageSessions = getSessionSelectionPageSessions(switchableSessions, normalizedPageIndex);
+	const rows = pageSessions.map((session) => [
 		Markup.button.callback(buildSessionButtonLabel(session), `${SESSION_SWITCH_CALLBACK_PREFIX}${session.id}`),
 	]);
+	const navigationRow = buildSessionSelectionNavigationRow(normalizedPageIndex, pageCount);
+	if (navigationRow) {
+		rows.push(navigationRow);
+	}
 	rows.push([Markup.button.callback("cancel", SESSION_SELECTION_CANCEL_CALLBACK_DATA)]);
 
 	return Markup.inlineKeyboard(rows);
+}
+
+function buildSessionSelectionPopup(sessions: SessionCatalogEntry[], pageIndex = 0): {
+	text: string;
+	keyboard: ReturnType<typeof buildSessionKeyboard> | undefined;
+} {
+	const switchableSessions = getSwitchableSessions(sessions);
+	if (switchableSessions.length === 0) {
+		return {
+			text: formatSessionsText(sessions),
+			keyboard: undefined,
+		};
+	}
+
+	const normalizedPageIndex = normalizeSessionSelectionPageIndex(pageIndex, switchableSessions.length);
+	const pageSessions = getSessionSelectionPageSessions(switchableSessions, normalizedPageIndex);
+	return {
+		text: formatSessionsText(pageSessions, {
+			pageIndex: normalizedPageIndex,
+			pageCount: getSessionSelectionPageCount(switchableSessions.length),
+			pageStartIndex: normalizedPageIndex * SESSION_SELECTION_PAGE_SIZE,
+		}),
+		keyboard: buildSessionKeyboard(sessions, normalizedPageIndex),
+	};
+}
+
+function getSwitchableSessions(sessions: SessionCatalogEntry[]): SessionCatalogEntry[] {
+	return sessions.filter((session) => session.source === "pi");
+}
+
+function getSessionSelectionPageSessions(
+	sessions: SessionCatalogEntry[],
+	pageIndex: number,
+): SessionCatalogEntry[] {
+	const startIndex = pageIndex * SESSION_SELECTION_PAGE_SIZE;
+	return sessions.slice(startIndex, startIndex + SESSION_SELECTION_PAGE_SIZE);
+}
+
+function getSessionSelectionPageCount(sessionCount: number): number {
+	return Math.max(1, Math.ceil(sessionCount / SESSION_SELECTION_PAGE_SIZE));
+}
+
+function normalizeSessionSelectionPageIndex(pageIndex: number, sessionCount: number): number {
+	if (!Number.isFinite(pageIndex) || pageIndex <= 0) {
+		return 0;
+	}
+
+	return Math.min(Math.trunc(pageIndex), getSessionSelectionPageCount(sessionCount) - 1);
+}
+
+function buildSessionSelectionNavigationRow(pageIndex: number, pageCount: number) {
+	if (pageCount <= 1) {
+		return undefined;
+	}
+
+	const buttons = [];
+	if (pageIndex > 0) {
+		buttons.push(
+			Markup.button.callback("Last page", `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}${pageIndex - 1}`),
+		);
+	}
+	if (pageIndex < pageCount - 1) {
+		buttons.push(
+			Markup.button.callback("Next page", `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}${pageIndex + 1}`),
+		);
+	}
+
+	return buttons.length > 0 ? buttons : undefined;
+}
+
+function parseSessionSelectionPageIndex(value: string | undefined): number {
+	if (!value) {
+		return 0;
+	}
+
+	const pageIndex = Number.parseInt(value, 10);
+	return Number.isNaN(pageIndex) ? 0 : pageIndex;
 }
 
 type SessionSelectionCancelContext = Pick<BotContext, "answerCbQuery" | "editMessageReplyMarkup">;

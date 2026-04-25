@@ -40,17 +40,28 @@ export function formatCurrentSessionText(session: SessionCatalogEntry | undefine
 	].join("\n");
 }
 
-export function formatSessionsText(sessions: SessionCatalogEntry[]): string {
+export interface FormatSessionsTextOptions {
+	pageIndex?: number;
+	pageCount?: number;
+	pageStartIndex?: number;
+}
+
+export function formatSessionsText(sessions: SessionCatalogEntry[], options?: FormatSessionsTextOptions): string {
 	if (sessions.length === 0) {
 		return "No Pi sessions found for the configured workspace yet. Use /new or send a freeform message.";
 	}
 
-	const lines = ["Sessions:"];
+	const title =
+		options?.pageCount && options.pageCount > 1
+			? `Sessions (page ${(options.pageIndex ?? 0) + 1}/${options.pageCount}):`
+			: "Sessions:";
+	const pageStartIndex = options?.pageStartIndex ?? 0;
+	const lines = [title];
 	for (const [index, session] of sessions.entries()) {
 		const marker = session.isSelected ? "*" : " ";
 		const source = session.source === "persisted" ? "pending" : formatDate(session.modified);
 		lines.push(
-			`${marker} ${index + 1}. ${session.id.slice(0, 8)} ${session.name ?? basename(session.path)} | ${source}`,
+			`${marker} ${pageStartIndex + index + 1}. ${session.id.slice(0, 8)} ${session.name ?? basename(session.path)} | ${source}`,
 		);
 		lines.push(`   ${truncate(session.firstMessage, 100)}`);
 	}

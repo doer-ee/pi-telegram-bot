@@ -2,12 +2,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Telegram } from "telegraf";
 import type { Update } from "telegraf/types";
 import type { AppConfig } from "../src/config/app-config.js";
-import type { SessionInfoRecord, PiRuntimeFactory, PiRuntimePort, SessionTitleRefinementRequest } from "../src/pi/pi-types.js";
+import type { PiRuntimeFactory, SessionTitleRefinementRequest } from "../src/pi/pi-types.js";
 import { SessionCoordinator, type SessionCatalogEntry } from "../src/session/session-coordinator.js";
-import { createEmptyAppState, type AppStateStore, type StoredBotOwnedSessionPin, type StoredSelectedSession } from "../src/state/app-state.js";
+import {
+	createEmptyAppState,
+	type AppStateStore,
+	type StoredBotOwnedSessionPin,
+	type StoredSelectedSession,
+} from "../src/state/app-state.js";
 import { SessionPinSync } from "../src/telegram/session-pin-sync.js";
 import {
 	SESSION_SELECTION_CANCEL_CALLBACK_DATA,
+	SESSION_SELECTION_PAGE_CALLBACK_PREFIX,
 	TelegramBotApp,
 } from "../src/telegram/telegram-bot-app.js";
 
@@ -17,6 +23,30 @@ const BOT_ID = 999;
 const BOT_USERNAME = "pi_test_bot";
 const SESSIONS_POPUP_MESSAGE_ID = 700;
 
+const ALPHA_SESSION = createSession({ id: "11111111-alpha", name: "Alpha", isSelected: true });
+const BETA_SESSION = createSession({ id: "22222222-beta", name: "Beta" });
+const GAMMA_SESSION = createSession({ id: "33333333-gamma", name: "Gamma" });
+const DELTA_SESSION = createSession({ id: "44444444-delta", name: "Delta" });
+const EPSILON_SESSION = createSession({ id: "55555555-epsilon", name: "Epsilon" });
+const ZETA_SESSION = createSession({ id: "66666666-zeta", name: "Zeta" });
+const ETA_SESSION = createSession({ id: "77777777-eta", name: "Eta" });
+const THETA_SESSION = createSession({ id: "88888888-theta", name: "Theta" });
+const IOTA_SESSION = createSession({ id: "99999999-iota", name: "Iota" });
+const KAPPA_SESSION = createSession({ id: "aaaaaaaa-kappa", name: "Kappa" });
+const LAMBDA_SESSION = createSession({ id: "bbbbbbbb-lambda", name: "Lambda" });
+
+const TWO_PAGE_SESSIONS = [
+	ALPHA_SESSION,
+	BETA_SESSION,
+	GAMMA_SESSION,
+	DELTA_SESSION,
+	EPSILON_SESSION,
+	ZETA_SESSION,
+	ETA_SESSION,
+];
+const THREE_PAGE_SESSIONS = [...TWO_PAGE_SESSIONS, THETA_SESSION, IOTA_SESSION, KAPPA_SESSION, LAMBDA_SESSION];
+const ONE_PAGE_SESSIONS = [ALPHA_SESSION, BETA_SESSION, GAMMA_SESSION];
+
 let restoreTelegramApi: (() => void) | undefined;
 
 afterEach(() => {
@@ -25,8 +55,8 @@ afterEach(() => {
 });
 
 describe("TelegramBotApp /sessions popup behavior", () => {
-	it("sends a /sessions popup containing a cancel button", async () => {
-		const harness = createTelegramBotAppHarness();
+	it("shows only Next page on the first page and keeps Cancel on the bottom row", async () => {
+		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
 
 		await harness.handleUpdate(createSessionsCommandUpdate());
 
@@ -36,24 +66,140 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 			method: "sendMessage",
 			payload: {
 				chat_id: CHAT_ID,
+				text: expect.stringContaining("Sessions (page 1/2):"),
 				reply_markup: {
 					inline_keyboard: [
-						[{ text: "current: Alpha", callback_data: `switch:${CURRENT_SESSION.id}`, hide: false }],
-						[{ text: "switch: Beta", callback_data: `switch:${OTHER_SESSION.id}`, hide: false }],
+						[{ text: "current: Alpha", callback_data: `switch:${ALPHA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Beta", callback_data: `switch:${BETA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Gamma", callback_data: `switch:${GAMMA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Delta", callback_data: `switch:${DELTA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Epsilon", callback_data: `switch:${EPSILON_SESSION.id}`, hide: false }],
+						[{ text: "Next page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}1`, hide: false }],
 						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
 					],
 				},
 			},
 		});
+		expect(JSON.stringify(harness.apiCalls[0])).not.toContain("Last page");
 	});
 
-	it("dismisses the popup on cancel without switching sessions", async () => {
-		const harness = createTelegramBotAppHarness();
+	it("shows both paging buttons on a middle page and updates the popup in place", async () => {
+		const harness = createTelegramBotAppHarness(THREE_PAGE_SESSIONS);
 
 		await harness.handleUpdate(createSessionsCommandUpdate());
 		harness.apiCalls.length = 0;
 
-		await harness.handleUpdate(createCancelCallbackUpdate());
+		await harness.handleUpdate(
+			createCallbackQueryUpdate({
+				callbackQueryId: "middle-page-callback",
+				data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}1`,
+			}),
+		);
+
+		expect(harness.coordinator.listSessionsCalls).toBe(2);
+		expect(harness.coordinator.switchSessionByIdCalls).toEqual([]);
+		expect(harness.apiCalls).toHaveLength(2);
+		expect(harness.apiCalls[0]).toMatchObject({
+			method: "editMessageText",
+			payload: {
+				chat_id: CHAT_ID,
+				message_id: SESSIONS_POPUP_MESSAGE_ID,
+				text: expect.stringContaining("Sessions (page 2/3):"),
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: "switch: Zeta", callback_data: `switch:${ZETA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Eta", callback_data: `switch:${ETA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Theta", callback_data: `switch:${THETA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Iota", callback_data: `switch:${IOTA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Kappa", callback_data: `switch:${KAPPA_SESSION.id}`, hide: false }],
+						[
+							{ text: "Last page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}0`, hide: false },
+							{ text: "Next page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}2`, hide: false },
+						],
+						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+					],
+				},
+			},
+		});
+		expect(harness.apiCalls[1]).toEqual({
+			method: "answerCallbackQuery",
+			payload: {
+				callback_query_id: "middle-page-callback",
+				text: undefined,
+			},
+		});
+	});
+
+	it("shows only Last page on the last page", async () => {
+		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
+
+		await harness.handleUpdate(createSessionsCommandUpdate());
+		harness.apiCalls.length = 0;
+
+		await harness.handleUpdate(
+			createCallbackQueryUpdate({
+				callbackQueryId: "last-page-callback",
+				data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}1`,
+			}),
+		);
+
+		expect(harness.coordinator.switchSessionByIdCalls).toEqual([]);
+		expect(harness.apiCalls[0]).toMatchObject({
+			method: "editMessageText",
+			payload: {
+				chat_id: CHAT_ID,
+				message_id: SESSIONS_POPUP_MESSAGE_ID,
+				text: expect.stringContaining("Sessions (page 2/2):"),
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: "switch: Zeta", callback_data: `switch:${ZETA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Eta", callback_data: `switch:${ETA_SESSION.id}`, hide: false }],
+						[{ text: "Last page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}0`, hide: false }],
+						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+					],
+				},
+			},
+		});
+		expect(JSON.stringify(harness.apiCalls[0])).not.toContain("Next page");
+	});
+
+	it("omits the paging row entirely when there is only one page", async () => {
+		const harness = createTelegramBotAppHarness(ONE_PAGE_SESSIONS);
+
+		await harness.handleUpdate(createSessionsCommandUpdate());
+
+		expect(harness.apiCalls).toHaveLength(1);
+		expect(harness.apiCalls[0]).toMatchObject({
+			method: "sendMessage",
+			payload: {
+				chat_id: CHAT_ID,
+				text: "Sessions:\n* 1. 11111111 Alpha | 2026-04-25 00:00\n   first message for Alpha\n  2. 22222222 Beta | 2026-04-25 00:00\n   first message for Beta\n  3. 33333333 Gamma | 2026-04-25 00:00\n   first message for Gamma\n\nTap a button below or use /switch <session-id-prefix-or-id>.",
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: "current: Alpha", callback_data: `switch:${ALPHA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Beta", callback_data: `switch:${BETA_SESSION.id}`, hide: false }],
+						[{ text: "switch: Gamma", callback_data: `switch:${GAMMA_SESSION.id}`, hide: false }],
+						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+					],
+				},
+			},
+		});
+		expect(JSON.stringify(harness.apiCalls[0])).not.toContain("Next page");
+		expect(JSON.stringify(harness.apiCalls[0])).not.toContain("Last page");
+	});
+
+	it("dismisses the popup on cancel without switching sessions", async () => {
+		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
+
+		await harness.handleUpdate(createSessionsCommandUpdate());
+		harness.apiCalls.length = 0;
+
+		await harness.handleUpdate(
+			createCallbackQueryUpdate({
+				callbackQueryId: "cancel-callback",
+				data: SESSION_SELECTION_CANCEL_CALLBACK_DATA,
+			}),
+		);
 
 		expect(harness.coordinator.switchSessionByIdCalls).toEqual([]);
 		expect(harness.apiCalls).toEqual([
@@ -77,11 +223,16 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 	});
 
 	it("keeps the existing switch callback flow working", async () => {
-		const harness = createTelegramBotAppHarness();
+		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
 
-		await harness.handleUpdate(createSwitchCallbackUpdate(OTHER_SESSION.id));
+		await harness.handleUpdate(
+			createCallbackQueryUpdate({
+				callbackQueryId: "switch-callback",
+				data: `switch:${ZETA_SESSION.id}`,
+			}),
+		);
 
-		expect(harness.coordinator.switchSessionByIdCalls).toEqual([OTHER_SESSION.id]);
+		expect(harness.coordinator.switchSessionByIdCalls).toEqual([ZETA_SESSION.id]);
 		expect(harness.apiCalls).toEqual([
 			{
 				method: "answerCallbackQuery",
@@ -94,37 +245,25 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 				method: "sendMessage",
 				payload: expect.objectContaining({
 					chat_id: CHAT_ID,
-					text: "Selected session 22222222 (Beta).",
+					text: "Selected session 66666666 (Zeta).",
 				}),
 			},
 		]);
 	});
 });
 
-const CURRENT_SESSION = createSession({
-	id: "11111111-alpha",
-	name: "Alpha",
-	isSelected: true,
-});
-const OTHER_SESSION = createSession({
-	id: "22222222-beta",
-	name: "Beta",
-});
-
-function createTelegramBotAppHarness() {
+function createTelegramBotAppHarness(sessions: SessionCatalogEntry[]) {
 	const apiCalls: TelegramApiCall[] = [];
 	restoreTelegramApi?.();
 	restoreTelegramApi = interceptTelegramApi(apiCalls);
 
-	const coordinator = new TestSessionCoordinator([CURRENT_SESSION, OTHER_SESSION]);
+	const coordinator = new TestSessionCoordinator(sessions);
 	const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync());
 	const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
 	Reflect.set(bot, "botInfo", createBotInfo());
 
 	return {
 		apiCalls,
-		app,
-		bot,
 		coordinator,
 		handleUpdate(update: Update): Promise<void> {
 			return bot.handleUpdate(update);
@@ -235,20 +374,6 @@ function createSessionsCommandUpdate(): Update {
 	};
 }
 
-function createCancelCallbackUpdate(): Update {
-	return createCallbackQueryUpdate({
-		callbackQueryId: "cancel-callback",
-		data: SESSION_SELECTION_CANCEL_CALLBACK_DATA,
-	});
-}
-
-function createSwitchCallbackUpdate(sessionId: string): Update {
-	return createCallbackQueryUpdate({
-		callbackQueryId: "switch-callback",
-		data: `switch:${sessionId}`,
-	});
-}
-
 function createCallbackQueryUpdate(options: { callbackQueryId: string; data: string }): Update {
 	return {
 		update_id: 2,
@@ -302,8 +427,8 @@ function createSession(overrides: Partial<SessionCatalogEntry> & Pick<SessionCat
 		created: overrides.created ?? new Date("2026-04-25T00:00:00.000Z"),
 		modified: overrides.modified ?? new Date("2026-04-25T00:00:00.000Z"),
 		messageCount: overrides.messageCount ?? 1,
-		firstMessage: overrides.firstMessage ?? "hello",
-		allMessagesText: overrides.allMessagesText ?? "hello",
+		firstMessage: overrides.firstMessage ?? `first message for ${overrides.name ?? overrides.id}`,
+		allMessagesText: overrides.allMessagesText ?? `all messages for ${overrides.name ?? overrides.id}`,
 		isSelected: overrides.isSelected ?? false,
 		source: overrides.source ?? "pi",
 	};
