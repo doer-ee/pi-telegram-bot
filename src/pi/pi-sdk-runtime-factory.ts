@@ -1,0 +1,327 @@
+import {
+	type AgentSessionEvent,
+	type AgentSessionRuntimeDiagnostic,
+	type AgentSessionRuntime,
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionFromServices,
+	createAgentSessionRuntime,
+	createAgentSessionServices,
+	getAgentDir,
+	SessionManager,
+} from "@mariozechner/pi-coding-agent";
+import type { Api, Model } from "@mariozechner/pi-ai";
+import { DEFAULT_TITLE_REFINEMENT_MODEL } from "../config/title-refinement-model.js";
+import type {
+	PiRuntimeFactory,
+	PiRuntimePort,
+	PiSessionEvent,
+	PiSessionEventListener,
+	PiSessionPort,
+	SessionTitleRefinementRequest,
+	SessionInfoRecord,
+} from "./pi-types.js";
+import { runSessionTitleRefinementWithTimeout } from "./session-title-refinement.js";
+import { buildSessionTitleRefinementPrompt } from "../session/session-title.js";
+import {
+	logResolvedSessionTitleRefinementModel,
+	logSessionTitleRefinementOutcome,
+} from "../session/session-title-logging.js";
+
+export class PiSdkRuntimeFactory implements PiRuntimeFactory {
+	private readonly agentDir: string;
+	private readonly titleRefinementModel: string;
+
+	constructor(agentDir?: string, titleRefinementModel: string = DEFAULT_TITLE_REFINEMENT_MODEL) {
+		this.agentDir = agentDir ?? getAgentDir();
+		this.titleRefinementModel = titleRefinementModel;
+	}
+
+	async createRuntime(options: { workspacePath: string; selectedSessionPath?: string }): Promise<PiRuntimePort> {
+		const sessionManager = options.selectedSessionPath
+			? SessionManager.open(options.selectedSessionPath)
+			: SessionManager.create(options.workspacePath);
+
+		const createRuntimeFactory: CreateAgentSessionRuntimeFactory = async ({
+			cwd,
+			sessionManager: nextSessionManager,
+			sessionStartEvent,
+		}) => {
+			const services = await createAgentSessionServices({
+				cwd,
+				agentDir: this.agentDir,
+			});
+			const sessionOptions = {
+				services,
+				sessionManager: nextSessionManager,
+				...(sessionStartEvent ? { sessionStartEvent } : {}),
+			};
+
+			return {
+				...(await createAgentSessionFromServices(sessionOptions)),
+				services,
+				diagnostics: services.diagnostics,
+			};
+		};
+
+		const runtime = await createAgentSessionRuntime(createRuntimeFactory, {
+			cwd: sessionManager.getCwd(),
+			agentDir: this.agentDir,
+			sessionManager,
+		});
+
+		await runtime.session.bindExtensions({});
+		throwOnDiagnosticErrors(runtime.diagnostics);
+		logDiagnosticWarnings(runtime.diagnostics);
+		return new PiSdkRuntimeAdapter(runtime);
+	}
+
+	async listSessions(workspacePath: string): Promise<SessionInfoRecord[]> {
+		return SessionManager.list(workspacePath);
+	}
+
+	async updateSessionName(sessionPath: string, name: string): Promise<void> {
+		SessionManager.open(sessionPath).appendSessionInfo(name);
+	}
+
+	async refineSessionTitle(request: SessionTitleRefinementRequest): Promise<string | undefined> {
+		try {
+			const services = await createAgentSessionServices({
+				cwd: request.workspacePath,
+				agentDir: this.agentDir,
+			});
+			throwOnDiagnosticErrors(services.diagnostics);
+			logDiagnosticWarnings(services.diagnostics);
+			const model = resolveConfiguredTitleRefinementModel(
+				services.modelRegistry,
+				this.titleRefinementModel,
+			);
+			logResolvedSessionTitleRefinementModel(model.provider, model.id);
+
+			const { session } = await createAgentSessionFromServices({
+				services,
+				sessionManager: SessionManager.inMemory(request.workspacePath),
+				model,
+				thinkingLevel: "low",
+				noTools: "all",
+			});
+
+			const refinementResult = await runSessionTitleRefinementWithTimeout({
+				session,
+				prompt: buildSessionTitleRefinementPrompt(request.prompt, request.heuristicTitle),
+				timeoutMs: request.timeoutMs,
+			});
+
+			if (refinementResult.status === "timed_out") {
+				logSessionTitleRefinementOutcome({
+					outcome: "timed out",
+					finalTitle: request.heuristicTitle,
+				});
+				return undefined;
+			}
+
+			if (!refinementResult.candidateTitle) {
+				logSessionTitleRefinementOutcome({
+					outcome: "unavailable",
+					finalTitle: request.heuristicTitle,
+				});
+				return undefined;
+			}
+
+			return refinementResult.candidateTitle;
+		} catch (error) {
+			logSessionTitleRefinementOutcome({
+				outcome: error instanceof TitleRefinementUnavailableError ? "unavailable" : "failed",
+				finalTitle: request.heuristicTitle,
+			});
+			throw error;
+		}
+	}
+}
+
+function resolveConfiguredTitleRefinementModel(
+	modelRegistry: AgentSessionRuntime["services"]["modelRegistry"],
+	modelReference: string,
+): Model<Api> {
+	const normalizedModelReference = modelReference.trim();
+	const exactProviderMatch = findProviderQualifiedModel(modelRegistry, normalizedModelReference);
+	if (exactProviderMatch) {
+		return requireConfiguredTitleRefinementModelAuth(
+			modelRegistry,
+			exactProviderMatch,
+			normalizedModelReference,
+		);
+	}
+
+	const exactIdMatches = modelRegistry
+		.getAvailable()
+		.filter((model) => model.id === normalizedModelReference || `${model.provider}/${model.id}` === normalizedModelReference);
+
+	if (exactIdMatches.length === 1) {
+		const [match] = exactIdMatches;
+		if (!match) {
+			throw new TitleRefinementUnavailableError(
+				`Configured title refinement model "${normalizedModelReference}" is not available.`,
+			);
+		}
+		return requireConfiguredTitleRefinementModelAuth(modelRegistry, match, normalizedModelReference);
+	}
+
+	if (exactIdMatches.length > 1) {
+		const deterministicDefaultMatch = selectDeterministicDefaultTitleRefinementMatch(
+			exactIdMatches,
+			normalizedModelReference,
+		);
+		if (deterministicDefaultMatch) {
+			return requireConfiguredTitleRefinementModelAuth(
+				modelRegistry,
+				deterministicDefaultMatch,
+				normalizedModelReference,
+			);
+		}
+
+		throw new TitleRefinementUnavailableError(
+			`Configured title refinement model "${normalizedModelReference}" is ambiguous. Matches: ${exactIdMatches.map((model) => `${model.provider}/${model.id}`).join(", ")}`,
+		);
+	}
+
+	throw new TitleRefinementUnavailableError(
+		`Configured title refinement model "${normalizedModelReference}" is not available.`,
+	);
+}
+
+function requireConfiguredTitleRefinementModelAuth(
+	modelRegistry: AgentSessionRuntime["services"]["modelRegistry"],
+	model: Model<Api>,
+	modelReference: string,
+): Model<Api> {
+	if (modelRegistry.hasConfiguredAuth(model)) {
+		return model;
+	}
+
+	throw new TitleRefinementUnavailableError(
+		`Configured title refinement model "${modelReference}" is missing auth configuration for ${model.provider}/${model.id}.`,
+	);
+}
+
+function selectDeterministicDefaultTitleRefinementMatch(
+	matches: readonly Model<Api>[],
+	modelReference: string,
+): Model<Api> | undefined {
+	if (modelReference !== DEFAULT_TITLE_REFINEMENT_MODEL) {
+		return undefined;
+	}
+
+	const preferredOpenAiMatch = matches.find((model) => model.provider === "openai");
+	if (preferredOpenAiMatch) {
+		return preferredOpenAiMatch;
+	}
+
+	return [...matches].sort(compareDeterministicTitleRefinementMatches)[0];
+}
+
+function compareDeterministicTitleRefinementMatches(left: Model<Api>, right: Model<Api>): number {
+	return left.provider.localeCompare(right.provider) || left.name.localeCompare(right.name);
+}
+
+function findProviderQualifiedModel(
+	modelRegistry: AgentSessionRuntime["services"]["modelRegistry"],
+	modelReference: string,
+): Model<Api> | undefined {
+	const providerSeparatorIndex = modelReference.indexOf("/");
+	if (providerSeparatorIndex <= 0 || providerSeparatorIndex === modelReference.length - 1) {
+		return undefined;
+	}
+
+	return modelRegistry.find(
+		modelReference.slice(0, providerSeparatorIndex),
+		modelReference.slice(providerSeparatorIndex + 1),
+	);
+}
+
+class TitleRefinementUnavailableError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "TitleRefinementUnavailableError";
+	}
+}
+
+class PiSdkRuntimeAdapter implements PiRuntimePort {
+	constructor(private readonly runtime: AgentSessionRuntime) {}
+
+	get session(): PiSessionPort {
+		return new PiSdkSessionAdapter(this.runtime.session);
+	}
+
+	async newSession(): Promise<void> {
+		const result = await this.runtime.newSession();
+		if (result.cancelled) {
+			throw new Error("Pi session creation was cancelled unexpectedly.");
+		}
+	}
+
+	async switchSession(sessionPath: string): Promise<void> {
+		const result = await this.runtime.switchSession(sessionPath);
+		if (result.cancelled) {
+			throw new Error(`Pi session switch was cancelled unexpectedly for ${sessionPath}.`);
+		}
+	}
+
+	async dispose(): Promise<void> {
+		await this.runtime.dispose();
+	}
+}
+
+class PiSdkSessionAdapter implements PiSessionPort {
+	constructor(private readonly session: AgentSessionRuntime["session"]) {}
+
+	get sessionFile(): string | undefined {
+		return this.session.sessionFile;
+	}
+
+	get sessionId(): string {
+		return this.session.sessionId;
+	}
+
+	get sessionName(): string | undefined {
+		return this.session.sessionName;
+	}
+
+	get isStreaming(): boolean {
+		return this.session.isStreaming;
+	}
+
+	subscribe(listener: PiSessionEventListener): () => void {
+		return this.session.subscribe((event: AgentSessionEvent) => {
+			listener(event as PiSessionEvent);
+		});
+	}
+
+	setSessionName(name: string): void {
+		this.session.setSessionName(name);
+	}
+
+	async sendUserMessage(content: string): Promise<void> {
+		await this.session.sendUserMessage(content);
+	}
+
+	async abort(): Promise<void> {
+		await this.session.abort();
+	}
+}
+
+function throwOnDiagnosticErrors(diagnostics: readonly AgentSessionRuntimeDiagnostic[]): void {
+	const errors = diagnostics.filter((diagnostic) => diagnostic.type === "error");
+	if (errors.length === 0) {
+		return;
+	}
+
+	throw new Error(errors.map((diagnostic) => diagnostic.message).join("\n"));
+}
+
+function logDiagnosticWarnings(diagnostics: readonly AgentSessionRuntimeDiagnostic[]): void {
+	for (const diagnostic of diagnostics) {
+		if (diagnostic.type === "warning") {
+			console.warn(`[pi-telegram-bot] ${diagnostic.message}`);
+		}
+	}
+}

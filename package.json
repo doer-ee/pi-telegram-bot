@@ -1,0 +1,34 @@
+{
+  "name": "pi-telegram-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "test": "vitest --run",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "service:install": "bash ./scripts/install-launch-agent.sh",
+    "service:uninstall": "bash ./scripts/uninstall-launch-agent.sh",
+    "service:start": "bash ./scripts/start-launch-agent.sh",
+    "service:stop": "bash ./scripts/stop-launch-agent.sh",
+    "service:restart": "bash ./scripts/restart-launch-agent.sh",
+    "service:status": "bash ./scripts/status-launch-agent.sh"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.70.2",
+    "dotenv": "^16.5.0",
+    "telegraf": "^4.16.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.12",
+    "tsx": "^4.20.6",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  }
+}

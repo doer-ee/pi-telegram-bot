@@ -1,0 +1,257 @@
+# pi-telegram-bot
+
+`pi-telegram-bot` is a local Node.js and TypeScript Telegram bot for running Pi sessions from a private Telegram DM.
+
+It runs the Pi SDK in-process, locks the bot to one authorized Telegram user, and keeps session routing explicit so prompts always go to the selected Pi session.
+
+> Status: MVP for a single-user, single-workspace workflow.
+
+## MVP scope
+
+This repository is intentionally narrow right now:
+
+- one authorized Telegram user
+- private DM workflow only
+- one configured workspace
+- one active Pi run at a time
+- text prompts only
+- macOS `launchd` helper scripts only
+
+It is not currently a multi-user bot, a group-chat bot, or a general remote hosting package.
+
+## What it does
+
+- runs Pi locally with no separate web service
+- restricts access to one Telegram user ID
+- keeps one selected session active and persists that selection across restarts
+- supports `/new`, `/sessions`, `/switch`, `/current`, `/status`, and `/abort`
+- registers the Telegram command menu on startup
+- streams replies back into Telegram and falls back to plain text if Markdown formatting is rejected
+- keeps a pinned `Active session:` message in sync when the active session has a title
+- creates a quick heuristic title for new sessions, then optionally refines it in the background
+
+## Requirements
+
+- Node.js 20.10+
+- Bun for dependency install and project scripts
+- a Telegram bot token from BotFather
+- your numeric Telegram user ID
+- a local Pi setup that already works on this machine
+
+This project does not log you into Pi or configure provider credentials for you. Pi must already be usable through the Pi SDK before this bot starts.
+
+## Installation and setup
+
+Run all commands from the repository root.
+
+### 1. Install dependencies
+
+```bash
+bun install
+cp .env.example .env
+```
+
+### 2. Create the Telegram bot with BotFather
+
+1. Open Telegram and start a chat with [@BotFather](https://t.me/BotFather).
+2. Send `/newbot`.
+3. Pick a display name for the bot.
+4. Pick a username that ends with `bot`.
+5. Copy the token BotFather returns.
+6. Put that token into `.env` as `TELEGRAM_BOT_TOKEN`.
+
+No manual Telegram command-menu setup is required. The app calls `setMyCommands` on startup.
+
+### 3. Get your Telegram user ID
+
+You need your own numeric user ID for `TELEGRAM_AUTHORIZED_USER_ID`.
+
+Common ways to get it:
+
+- message [@userinfobot](https://t.me/userinfobot) and copy the numeric ID it returns
+- or send a message to your bot, then inspect `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates` and use the private-chat `from.id` value
+
+Use your personal numeric ID, not your `@username` and not the bot's ID.
+
+### 4. Configure `.env`
+
+At minimum, set:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_AUTHORIZED_USER_ID`
+- `PI_WORKSPACE_PATH`
+
+Example:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=replace-with-your-botfather-token
+TELEGRAM_AUTHORIZED_USER_ID=123456789
+PI_WORKSPACE_PATH=/absolute/path/to/your/pi-workspace
+BOT_STATE_PATH=./data/state.json
+```
+
+### 5. Start the bot
+
+Development:
+
+```bash
+bun run dev
+```
+
+Built run:
+
+```bash
+bun run build
+bun run start
+```
+
+## Configuration reference
+
+### Env-file loading behavior
+
+The app force-loads an env file at startup.
+
+1. If `PI_TELEGRAM_BOT_ENV_PATH` is set in the parent environment, that file is loaded.
+2. Otherwise the project `.env` file is loaded.
+3. Values from the loaded file overwrite inherited shell or service environment variables with the same names.
+4. If the selected env file is missing or unreadable, startup fails immediately.
+
+Important: do not set `PI_TELEGRAM_BOT_ENV_PATH` inside `.env`. That value has to exist before the app decides which env file to read.
+
+### Environment variables
+
+| Variable | Required | Purpose | Notes |
+| --- | --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token from BotFather. | Startup fails if missing. |
+| `TELEGRAM_AUTHORIZED_USER_ID` | Yes | Numeric Telegram user ID allowed to use the bot. | Must be a positive integer. |
+| `PI_WORKSPACE_PATH` | Yes | Workspace controlled by the bot. | Must point to an existing directory. |
+| `BOT_STATE_PATH` | No | Local JSON file for selected-session and pin metadata. | Defaults to `./data/state.json`. |
+| `PI_AGENT_DIR` | No | Optional Pi agent directory override. | Leave blank to use the Pi SDK default for this machine. |
+| `PI_SESSION_TITLE_REFINEMENT_MODEL` | No | Background-only model for session-title refinement. | Defaults to `openai/gpt-5.4-mini`; provider-qualified values are recommended. |
+| `TELEGRAM_STREAM_THROTTLE_MS` | No | Minimum delay between streamed reply updates. | Default `1000`, minimum `250`. |
+| `TELEGRAM_CHUNK_SIZE` | No | Max characters per Telegram message chunk. | Default `3500`, valid range `512` to `4000`. |
+
+Relative paths resolve from the current working directory. If you run the app from the repo root, the default `BOT_STATE_PATH=./data/state.json` stays inside this project.
+
+## Daily Telegram usage
+
+Use the bot from the authorized private Telegram account.
+
+Available commands:
+
+- `/start`
+- `/help`
+- `/status`
+- `/new`
+- `/sessions`
+- `/switch <session-id-prefix-or-id>`
+- `/current`
+- `/abort`
+
+Behavior notes:
+
+- any non-command text message is sent to the selected session
+- if no session is selected yet, the first freeform text message creates one automatically
+- `/sessions` shows recent sessions and inline buttons for switching
+- `/switch` also supports a unique session ID prefix
+- while a run is active, new prompts, `/new`, and session switches are rejected until the run finishes or you use `/abort`
+- non-text Telegram attachments are not sent to Pi in this MVP
+
+## Local-only files and repo hygiene
+
+The public repo is meant to keep secrets and runtime output out of version control.
+
+- `.env` is local-only and should never be committed
+- `node_modules/` and `dist/` are generated output
+- `data/` stores local selected-session and pin state
+- `tmp/` stores local logs and temporary diagnostics
+
+The included `.gitignore` excludes those paths for public upload.
+
+## macOS service setup
+
+This repo includes user-level `launchd` scripts for macOS.
+
+Install and verify the LaunchAgent:
+
+```bash
+bun run build
+bun run service:install
+bun run service:status
+```
+
+The installed LaunchAgent:
+
+- is written to `~/Library/LaunchAgents/com.doer.pi-telegram-bot.plist`
+- runs `node dist/index.js`
+- sets `PI_TELEGRAM_BOT_ENV_PATH` to the project `.env`
+- writes logs under `tmp/logs/launchd/`
+- starts at login with `RunAtLoad`
+
+Daily service commands:
+
+```bash
+bun run service:start
+bun run service:stop
+bun run service:restart
+bun run service:uninstall
+```
+
+Service caveats:
+
+- rebuild before `service:restart` after code changes
+- rerun `service:install` if your Node binary moves
+- run the service commands from a logged-in macOS desktop session
+- the bundled service flow is not for Linux, Windows, or root-daemon use
+
+Useful log checks:
+
+```bash
+tail -f tmp/logs/launchd/stdout.log
+tail -f tmp/logs/launchd/stderr.log
+```
+
+## Architecture at a glance
+
+- `src/index.ts` loads env, validates config, and wires the app together
+- `src/config/*` resolves and validates env-driven configuration
+- `src/pi/*` creates Pi SDK runtimes and handles background title refinement
+- `src/session/*` owns session selection, busy-state enforcement, and prompt routing
+- `src/telegram/*` handles commands, reply streaming, formatting, and session-pin sync
+- `src/state/*` persists local bot-owned state
+- `scripts/*` and `launchd/*` manage the optional macOS LaunchAgent
+
+## Troubleshooting
+
+### `Unauthorized user.`
+
+`TELEGRAM_AUTHORIZED_USER_ID` is wrong, not numeric, or belongs to a different Telegram account.
+
+### `Failed to load project env file`
+
+The selected env file is missing or unreadable. Check `.env` or the parent-shell value of `PI_TELEGRAM_BOT_ENV_PATH`.
+
+### Workspace or agent-dir path errors
+
+`PI_WORKSPACE_PATH` and `PI_AGENT_DIR`, when set, must point to existing directories.
+
+### The bot is busy
+
+Only one Pi run can be active at a time. Wait for completion or use `/abort`.
+
+### The service does not start
+
+Check these in order:
+
+1. `bun run build` completed successfully.
+2. `.env` exists and is correct.
+3. `bun run service:status` shows the installed LaunchAgent.
+4. `tmp/logs/launchd/stderr.log` contains the real startup error.
+
+## Verification
+
+```bash
+bun run build
+bun run typecheck
+bun run test
+```

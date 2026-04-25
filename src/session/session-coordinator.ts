@@ -1,0 +1,507 @@
+import { basename } from "node:path";
+import type { PiRuntimeFactory, PiRuntimePort, SessionInfoRecord } from "../pi/pi-types.js";
+import type { AppStateStore, StoredSelectedSession } from "../state/app-state.js";
+import { AmbiguousSessionReferenceError, BusySessionError, SessionNotFoundError } from "./session-errors.js";
+import { SessionEventBinding } from "./session-event-binding.js";
+import { extractMessageText, isAssistantMessageEvent } from "./message-text.js";
+import {
+	generateHeuristicSessionTitle,
+	selectRefinedSessionTitle,
+} from "./session-title.js";
+import { logHeuristicSessionTitle, logSessionTitleRefinementOutcome } from "./session-title-logging.js";
+
+export interface SessionCatalogEntry extends SessionInfoRecord {
+	isSelected: boolean;
+	source: "pi" | "persisted";
+}
+
+export interface BotStatus {
+	workspacePath: string;
+	busy: boolean;
+	sessionCount: number;
+	selectedSession: SessionCatalogEntry | undefined;
+}
+
+export interface PromptObserver {
+	onPromptStarted?(session: SessionCatalogEntry): void;
+	onAssistantText?(text: string, done: boolean): void;
+	onPromptFinished?(result: { sessionPath: string; assistantText: string; aborted: boolean }): void;
+}
+
+export interface PromptResult {
+	sessionPath: string;
+	assistantText: string;
+	aborted: boolean;
+}
+
+export interface ActiveSessionInfo {
+	path: string;
+	id: string;
+	name?: string | undefined;
+}
+
+export interface ActiveSessionObserver {
+	onActiveSessionUpdated?(session: ActiveSessionInfo): void | Promise<void>;
+}
+
+export interface SessionCoordinatorOptions {
+	titleRefinementTimeoutMs?: number;
+}
+
+interface ActiveRun {
+	sessionPath: string;
+	abortRequested: boolean;
+}
+
+export class SessionCoordinator {
+	private static readonly DEFAULT_TITLE_REFINEMENT_TIMEOUT_MS = 15_000;
+
+	private runtime: PiRuntimePort | undefined;
+	private readonly eventBinding = new SessionEventBinding();
+	private readonly activeSessionObservers = new Set<ActiveSessionObserver>();
+	private selectedSession: StoredSelectedSession | undefined;
+	private activeRun: ActiveRun | undefined;
+	private initialized = false;
+	private readonly titleRefinementTimeoutMs: number;
+
+	constructor(
+		private readonly workspacePath: string,
+		private readonly stateStore: AppStateStore,
+		private readonly runtimeFactory: PiRuntimeFactory,
+		options?: SessionCoordinatorOptions,
+	) {
+		this.titleRefinementTimeoutMs =
+			options?.titleRefinementTimeoutMs ?? SessionCoordinator.DEFAULT_TITLE_REFINEMENT_TIMEOUT_MS;
+	}
+
+	async initialize(): Promise<void> {
+		if (this.initialized) {
+			return;
+		}
+
+		const state = await this.stateStore.load(this.workspacePath);
+		this.selectedSession = state.selectedSession;
+
+		if (this.selectedSession) {
+			this.runtime = await this.runtimeFactory.createRuntime({
+				workspacePath: this.workspacePath,
+				selectedSessionPath: this.selectedSession.path,
+			});
+			await this.afterSessionReplacement(this.selectedSession.selectedAt);
+		}
+
+		this.initialized = true;
+	}
+
+	async listSessions(): Promise<SessionCatalogEntry[]> {
+		const sessions = await this.runtimeFactory.listSessions(this.workspacePath);
+		const selectedPath = this.selectedSession?.path;
+		const catalog: SessionCatalogEntry[] = sessions.map((session) => ({
+			...session,
+			isSelected: session.path === selectedPath,
+			source: "pi" as const,
+		}));
+
+		if (this.selectedSession && !catalog.some((session) => session.path === this.selectedSession?.path)) {
+			const selectedAt = new Date(this.selectedSession.selectedAt);
+			catalog.unshift({
+				path: this.selectedSession.path,
+				id: this.selectedSession.sessionId,
+				cwd: this.workspacePath,
+				name: this.runtime?.session.sessionName,
+				created: selectedAt,
+				modified: selectedAt,
+				messageCount: 0,
+				firstMessage: "(awaiting first assistant reply)",
+				allMessagesText: "",
+				isSelected: true,
+				source: "persisted",
+			});
+		}
+
+		return catalog;
+	}
+
+	async getCurrentSession(): Promise<SessionCatalogEntry | undefined> {
+		if (!this.selectedSession) {
+			return undefined;
+		}
+
+		return (await this.listSessions()).find((session) => session.path === this.selectedSession?.path);
+	}
+
+	async getStatus(): Promise<BotStatus> {
+		const listedSessions = await this.runtimeFactory.listSessions(this.workspacePath);
+		return {
+			workspacePath: this.workspacePath,
+			busy: this.isBusy(),
+			sessionCount: listedSessions.length,
+			selectedSession: await this.getCurrentSession(),
+		};
+	}
+
+	async createNewSession(): Promise<SessionCatalogEntry> {
+		this.assertIdle();
+
+		if (!this.runtime) {
+			this.runtime = await this.runtimeFactory.createRuntime({ workspacePath: this.workspacePath });
+		} else {
+			await this.runtime.newSession();
+		}
+
+		await this.afterSessionReplacement();
+		return this.requireCurrentSession();
+	}
+
+	async switchSession(sessionPath: string): Promise<SessionCatalogEntry> {
+		this.assertIdle();
+
+		if (this.selectedSession?.path === sessionPath) {
+			return this.requireCurrentSession();
+		}
+
+		if (!this.runtime) {
+			this.runtime = await this.runtimeFactory.createRuntime({
+				workspacePath: this.workspacePath,
+				selectedSessionPath: sessionPath,
+			});
+		} else {
+			await this.runtime.switchSession(sessionPath);
+		}
+
+		await this.afterSessionReplacement();
+		return this.requireCurrentSession();
+	}
+
+	async switchSessionById(sessionId: string): Promise<SessionCatalogEntry> {
+		const session = (await this.listSessions()).find((entry) => entry.id === sessionId);
+		if (!session) {
+			throw new SessionNotFoundError(sessionId);
+		}
+		return this.switchSession(session.path);
+	}
+
+	async switchSessionByReference(reference: string): Promise<SessionCatalogEntry> {
+		const normalizedReference = reference.trim();
+		if (normalizedReference.length === 0) {
+			throw new SessionNotFoundError(reference);
+		}
+
+		const sessions = await this.listSessions();
+		const exactMatch = sessions.find(
+			(session) => session.id === normalizedReference || session.path === normalizedReference,
+		);
+		if (exactMatch) {
+			return this.switchSession(exactMatch.path);
+		}
+
+		const prefixMatches = sessions.filter((session) => session.id.startsWith(normalizedReference));
+		if (prefixMatches.length === 1) {
+			const [match] = prefixMatches;
+			if (!match) {
+				throw new SessionNotFoundError(normalizedReference);
+			}
+			return this.switchSession(match.path);
+		}
+		if (prefixMatches.length > 1) {
+			throw new AmbiguousSessionReferenceError(
+				normalizedReference,
+				prefixMatches.map((session) => session.id.slice(0, 8)),
+			);
+		}
+
+		throw new SessionNotFoundError(normalizedReference);
+	}
+
+	async sendPrompt(text: string, observer?: PromptObserver): Promise<PromptResult> {
+		this.assertIdle();
+		const activeRun: ActiveRun = {
+			sessionPath: this.selectedSession?.path ?? "pending-session-selection",
+			abortRequested: false,
+		};
+		this.activeRun = activeRun;
+
+		let selectedSession: SessionCatalogEntry | undefined;
+		let unsubscribe: (() => void) | undefined;
+
+		let lastAssistantText = "";
+		let finalDelivered = false;
+
+		try {
+			selectedSession = await this.ensureSelectedSession();
+			activeRun.sessionPath = selectedSession.path;
+			const initialTitle = this.isFirstPromptForSession(selectedSession)
+				? this.applyHeuristicSessionTitle(text)
+				: undefined;
+			if (initialTitle) {
+				selectedSession = {
+					...selectedSession,
+					name: initialTitle,
+				};
+			}
+			if (activeRun.abortRequested) {
+				const result: PromptResult = {
+					sessionPath: selectedSession.path,
+					assistantText: "",
+					aborted: true,
+				};
+				observer?.onPromptFinished?.(result);
+				return result;
+			}
+			const runtime = this.requireRuntime();
+
+			unsubscribe = this.eventBinding.addListener((event) => {
+				if (!isAssistantMessageEvent(event)) {
+					return;
+				}
+
+				const nextText = extractMessageText(event.message);
+				lastAssistantText = nextText;
+				const isFinal = event.type === "message_end";
+				if (isFinal) {
+					finalDelivered = true;
+				}
+				observer?.onAssistantText?.(nextText, isFinal);
+			});
+
+			observer?.onPromptStarted?.(selectedSession);
+			const promptPromise = runtime.session.sendUserMessage(text);
+			if (initialTitle) {
+				this.scheduleSessionTitleRefinement({
+					sessionPath: selectedSession.path,
+					prompt: text,
+					heuristicTitle: initialTitle,
+				});
+			}
+			await promptPromise;
+			if (!finalDelivered && lastAssistantText.length > 0) {
+				observer?.onAssistantText?.(lastAssistantText, true);
+			}
+			const result: PromptResult = {
+				sessionPath: selectedSession.path,
+				assistantText: lastAssistantText,
+				aborted: activeRun.abortRequested,
+			};
+			observer?.onPromptFinished?.(result);
+			return result;
+		} finally {
+			unsubscribe?.();
+			if (this.activeRun === activeRun) {
+				this.activeRun = undefined;
+			}
+		}
+	}
+
+	async abortActiveRun(): Promise<boolean> {
+		const activeRun = this.activeRun;
+		if (!activeRun) {
+			return false;
+		}
+
+		activeRun.abortRequested = true;
+		if (!this.runtime) {
+			return true;
+		}
+
+		await this.runtime.session.abort();
+		return true;
+	}
+
+	isBusy(): boolean {
+		return this.activeRun !== undefined;
+	}
+
+	async dispose(): Promise<void> {
+		this.eventBinding.dispose();
+		this.activeSessionObservers.clear();
+		if (this.runtime) {
+			await this.runtime.dispose();
+			this.runtime = undefined;
+		}
+	}
+
+	addActiveSessionObserver(observer: ActiveSessionObserver): () => void {
+		this.activeSessionObservers.add(observer);
+		return () => {
+			this.activeSessionObservers.delete(observer);
+		};
+	}
+
+	private async ensureSelectedSession(): Promise<SessionCatalogEntry> {
+		if (!this.selectedSession) {
+			if (!this.runtime) {
+				this.runtime = await this.runtimeFactory.createRuntime({ workspacePath: this.workspacePath });
+			} else {
+				await this.runtime.newSession();
+			}
+			await this.afterSessionReplacement();
+			return this.requireCurrentSession();
+		}
+
+		if (!this.runtime) {
+			this.runtime = await this.runtimeFactory.createRuntime({
+				workspacePath: this.workspacePath,
+				selectedSessionPath: this.selectedSession.path,
+			});
+			await this.afterSessionReplacement(this.selectedSession.selectedAt);
+		}
+
+		return this.requireCurrentSession();
+	}
+
+	private requireRuntime(): PiRuntimePort {
+		if (!this.runtime) {
+			throw new Error("Pi runtime is not available.");
+		}
+		return this.runtime;
+	}
+
+	private isFirstPromptForSession(session: SessionCatalogEntry): boolean {
+		return session.messageCount === 0 && !session.name;
+	}
+
+	private applyHeuristicSessionTitle(prompt: string): string {
+		const title = generateHeuristicSessionTitle(prompt);
+		this.requireRuntime().session.setSessionName(title);
+		logHeuristicSessionTitle(title);
+		this.emitCurrentActiveSessionUpdate();
+		return title;
+	}
+
+	private scheduleSessionTitleRefinement(options: {
+		sessionPath: string;
+		prompt: string;
+		heuristicTitle: string;
+	}): void {
+		void this.runSessionTitleRefinement(options).catch(() => undefined);
+	}
+
+	private async runSessionTitleRefinement(options: {
+		sessionPath: string;
+		prompt: string;
+		heuristicTitle: string;
+	}): Promise<void> {
+		const safeCandidatePromise = this.runtimeFactory
+			.refineSessionTitle({
+				workspacePath: this.workspacePath,
+				prompt: options.prompt,
+				heuristicTitle: options.heuristicTitle,
+				timeoutMs: this.titleRefinementTimeoutMs,
+			})
+			.catch(() => undefined);
+
+		const candidateTitle = await withTimeout(safeCandidatePromise, this.titleRefinementTimeoutMs);
+		if (!candidateTitle) {
+			return;
+		}
+
+		const refinedTitle = selectRefinedSessionTitle({
+			prompt: options.prompt,
+			heuristicTitle: options.heuristicTitle,
+			candidateTitle,
+		});
+		if (!refinedTitle) {
+			logSessionTitleRefinementOutcome({
+				outcome: "rejected",
+				finalTitle: options.heuristicTitle,
+				candidateTitle,
+			});
+			return;
+		}
+
+		try {
+			if (this.selectedSession?.path === options.sessionPath && this.runtime) {
+				this.runtime.session.setSessionName(refinedTitle);
+				this.emitCurrentActiveSessionUpdate();
+				logSessionTitleRefinementOutcome({
+					outcome: "accepted",
+					finalTitle: refinedTitle,
+				});
+				return;
+			}
+
+			await this.runtimeFactory.updateSessionName(options.sessionPath, refinedTitle);
+			logSessionTitleRefinementOutcome({
+				outcome: "accepted",
+				finalTitle: refinedTitle,
+			});
+		} catch (error) {
+			logSessionTitleRefinementOutcome({
+				outcome: "failed",
+				finalTitle: options.heuristicTitle,
+			});
+			throw error;
+		}
+	}
+
+	private async afterSessionReplacement(selectedAt?: string): Promise<void> {
+		const runtime = this.requireRuntime();
+		const sessionPath = runtime.session.sessionFile;
+		if (!sessionPath) {
+			throw new Error("Pi runtime created a non-persistent session, which is not supported by this bot.");
+		}
+
+		this.eventBinding.rebind(runtime.session);
+		this.selectedSession = {
+			path: sessionPath,
+			sessionId: runtime.session.sessionId,
+			selectedAt: selectedAt ?? new Date().toISOString(),
+		};
+		await this.stateStore.saveSelectedSession(this.workspacePath, this.selectedSession);
+		this.emitCurrentActiveSessionUpdate();
+	}
+
+	private emitCurrentActiveSessionUpdate(): void {
+		if (!this.runtime) {
+			return;
+		}
+
+		const sessionPath = this.runtime.session.sessionFile;
+		if (!sessionPath) {
+			return;
+		}
+
+		const activeSession: ActiveSessionInfo = {
+			path: sessionPath,
+			id: this.runtime.session.sessionId,
+			name: this.runtime.session.sessionName,
+		};
+
+		for (const observer of this.activeSessionObservers) {
+			void Promise.resolve(observer.onActiveSessionUpdated?.(activeSession)).catch((error) => {
+				console.error("[pi-telegram-bot] Active session observer failed:", error);
+			});
+		}
+	}
+
+	private async requireCurrentSession(): Promise<SessionCatalogEntry> {
+		const current = await this.getCurrentSession();
+		if (!current) {
+			throw new SessionNotFoundError(this.selectedSession?.path ?? basename(this.workspacePath));
+		}
+		return current;
+	}
+
+	private assertIdle(): void {
+		if (this.isBusy()) {
+			throw new BusySessionError();
+		}
+	}
+}
+
+async function withTimeout<T>(promise: Promise<T | undefined>, timeoutMs: number): Promise<T | undefined> {
+	let timeoutHandle: NodeJS.Timeout | undefined;
+	const timeoutPromise = new Promise<undefined>((resolve) => {
+		timeoutHandle = setTimeout(() => {
+			resolve(undefined);
+		}, timeoutMs);
+	});
+
+	try {
+		return await Promise.race([promise, timeoutPromise]);
+	} finally {
+		if (timeoutHandle) {
+			clearTimeout(timeoutHandle);
+		}
+	}
+}
