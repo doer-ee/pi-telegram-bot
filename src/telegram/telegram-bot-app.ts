@@ -43,6 +43,9 @@ const INTERACTIVE_MESSAGE_KEYS = [
 	"voice",
 ] as const;
 
+export const SESSION_SWITCH_CALLBACK_PREFIX = "switch:";
+export const SESSION_SELECTION_CANCEL_CALLBACK_DATA = "sessions:cancel";
+
 export class TelegramBotApp {
 	private readonly bot: Telegraf<BotContext>;
 	private readonly sessionPinSync: SessionPinSync;
@@ -155,7 +158,13 @@ export class TelegramBotApp {
 			});
 		});
 
-		this.bot.action(/^switch:(.+)$/, async (ctx) => {
+		this.bot.action(SESSION_SELECTION_CANCEL_CALLBACK_DATA, async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				await dismissSessionSelectionKeyboard(ctx);
+			});
+		});
+
+		this.bot.action(new RegExp(`^${SESSION_SWITCH_CALLBACK_PREFIX}(.+)$`), async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
 				const sessionId = ctx.match[1];
 				if (!sessionId) {
@@ -218,17 +227,25 @@ export class TelegramBotApp {
 	}
 }
 
-function buildSessionKeyboard(sessions: SessionCatalogEntry[]) {
+export function buildSessionKeyboard(sessions: SessionCatalogEntry[]) {
 	const switchableSessions = sessions.filter((session) => session.source === "pi");
 	if (switchableSessions.length === 0) {
 		return undefined;
 	}
 
-	return Markup.inlineKeyboard(
-		switchableSessions.map((session) => [
-			Markup.button.callback(buildSessionButtonLabel(session), `switch:${session.id}`),
-		]),
-	);
+	const rows = switchableSessions.map((session) => [
+		Markup.button.callback(buildSessionButtonLabel(session), `${SESSION_SWITCH_CALLBACK_PREFIX}${session.id}`),
+	]);
+	rows.push([Markup.button.callback("cancel", SESSION_SELECTION_CANCEL_CALLBACK_DATA)]);
+
+	return Markup.inlineKeyboard(rows);
+}
+
+type SessionSelectionCancelContext = Pick<BotContext, "answerCbQuery" | "editMessageReplyMarkup">;
+
+export async function dismissSessionSelectionKeyboard(ctx: SessionSelectionCancelContext): Promise<void> {
+	await ctx.editMessageReplyMarkup(undefined);
+	await ctx.answerCbQuery();
 }
 
 function buildSessionButtonLabel(session: SessionCatalogEntry): string {
