@@ -13,3 +13,6 @@ tmp/
 
 # OS/editor noise
 .DS_Store
+
+# Local agent guidance
+AGENTS.md
