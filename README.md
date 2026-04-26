@@ -164,7 +164,7 @@ The public repo is meant to keep secrets and runtime output out of version contr
 - `.env` is local-only and should never be committed
 - `node_modules/` and `dist/` are generated output
 - `data/` stores local selected-session and pin state
-- `tmp/` stores local logs and temporary diagnostics
+- `tmp/` stores local temporary diagnostics
 
 The included `.gitignore` excludes those paths for public upload.
 
@@ -185,7 +185,7 @@ The installed LaunchAgent:
 - is written to `~/Library/LaunchAgents/com.doer.pi-telegram-bot.plist`
 - runs `node dist/index.js`
 - sets `PI_TELEGRAM_BOT_ENV_PATH` to the project `.env`
-- writes logs under `tmp/logs/launchd/`
+- writes logs under `~/Library/Logs/pi-telegram-bot/`
 - starts at login with `RunAtLoad`
 
 Daily service commands:
@@ -200,15 +200,15 @@ bun run service:uninstall
 Service caveats:
 
 - rebuild before `service:restart` after code changes
-- rerun `service:install` if your Node binary moves
+- rerun `service:install` after LaunchAgent config changes such as a moved Node binary or updated log path
 - run the service commands from a logged-in macOS desktop session
 - the bundled service flow is not for Linux, Windows, or root-daemon use
 
 Useful log checks:
 
 ```bash
-tail -f tmp/logs/launchd/stdout.log
-tail -f tmp/logs/launchd/stderr.log
+tail -f ~/Library/Logs/pi-telegram-bot/stdout.log
+tail -f ~/Library/Logs/pi-telegram-bot/stderr.log
 ```
 
 ## Architecture at a glance
@@ -246,7 +246,7 @@ Check these in order:
 1. `bun run build` completed successfully.
 2. `.env` exists and is correct.
 3. `bun run service:status` shows the installed LaunchAgent.
-4. `tmp/logs/launchd/stderr.log` contains the real startup error.
+4. `~/Library/Logs/pi-telegram-bot/stderr.log` contains the real startup error.
 
 ## Verification
 
