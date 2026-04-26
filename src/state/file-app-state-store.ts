@@ -6,6 +6,7 @@ import {
 	type AppStateStore,
 	createEmptyAppState,
 	type StoredBotOwnedSessionPin,
+	type StoredRecentModel,
 	type StoredSelectedSession,
 } from "./app-state.js";
 
@@ -22,11 +23,17 @@ const StoredBotOwnedSessionPinSchema = z.object({
 	text: z.string().min(1),
 });
 
+const StoredRecentModelSchema = z.object({
+	provider: z.string().min(1),
+	id: z.string().min(1),
+});
+
 const AppStateSchema = z.object({
 	version: z.literal(1),
 	workspacePath: z.string().min(1),
 	selectedSession: StoredSelectedSessionSchema.optional(),
 	botOwnedSessionPin: StoredBotOwnedSessionPinSchema.optional(),
+	modelRecency: z.array(StoredRecentModelSchema).optional(),
 });
 
 export class FileAppStateStore implements AppStateStore {
@@ -75,6 +82,13 @@ export class FileAppStateStore implements AppStateStore {
 		await this.updateState(workspacePath, (state) => ({
 			...state,
 			botOwnedSessionPin: undefined,
+		}));
+	}
+
+	async saveModelRecency(workspacePath: string, modelRecency: StoredRecentModel[]): Promise<void> {
+		await this.updateState(workspacePath, (state) => ({
+			...state,
+			modelRecency,
 		}));
 	}
 

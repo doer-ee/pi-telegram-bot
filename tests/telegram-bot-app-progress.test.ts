@@ -167,12 +167,14 @@ function createTelegramMessageClientStub() {
 function createAppStateStoreStub(): AppStateStore {
 	let selectedSession: StoredSelectedSession | undefined;
 	let botOwnedSessionPin: StoredBotOwnedSessionPin | undefined;
+	let modelRecency = createEmptyAppState("/workspace").modelRecency;
 
 	return {
 		load: async (workspacePath: string) => ({
 			...createEmptyAppState(workspacePath),
 			selectedSession,
 			botOwnedSessionPin,
+			modelRecency,
 		}),
 		saveSelectedSession: async (_workspacePath: string, nextSelectedSession: StoredSelectedSession) => {
 			selectedSession = nextSelectedSession;
@@ -185,6 +187,9 @@ function createAppStateStoreStub(): AppStateStore {
 		},
 		clearBotOwnedSessionPin: async (_workspacePath: string) => {
 			botOwnedSessionPin = undefined;
+		},
+		saveModelRecency: async (_workspacePath: string, nextModelRecency) => {
+			modelRecency = nextModelRecency;
 		},
 	};
 }

@@ -171,8 +171,8 @@ describe("TelegramBotApp /model", () => {
 					text: "Models:\nCurrent: anthropic/claude-sonnet-4-5\n\nTap a button below to switch the current session model.",
 					reply_markup: {
 						inline_keyboard: [
-							[{ text: "openai/gpt-5.4", callback_data: expect.stringContaining("models:select:0:"), hide: false }],
 							[{ text: "current: anthropic/claude-sonnet-4-5", callback_data: expect.stringContaining("models:select:0:"), hide: false }],
+							[{ text: "openai/gpt-5.4", callback_data: expect.stringContaining("models:select:0:"), hide: false }],
 							[{ text: "cancel", callback_data: MODEL_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
 						],
 					},
@@ -435,6 +435,7 @@ function createAppStateStoreStub(): AppStateStore {
 		clearSelectedSession: async (_workspacePath: string) => undefined,
 		saveBotOwnedSessionPin: async (_workspacePath: string, _botOwnedSessionPin: StoredBotOwnedSessionPin) => undefined,
 		clearBotOwnedSessionPin: async (_workspacePath: string) => undefined,
+		saveModelRecency: async (_workspacePath: string, _modelRecency) => undefined,
 	};
 }
 
@@ -612,6 +613,12 @@ class TestSessionCoordinator extends SessionCoordinator {
 		this.selection = {
 			...this.selection,
 			currentModel: model,
+			availableModels: [
+				model,
+				...this.selection.availableModels.filter(
+					(candidate) => candidate.provider !== model.provider || candidate.id !== model.id,
+				),
+			],
 		};
 
 		return {

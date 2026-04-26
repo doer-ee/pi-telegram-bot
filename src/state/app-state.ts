@@ -11,11 +11,17 @@ export interface StoredBotOwnedSessionPin {
 	text: string;
 }
 
+export interface StoredRecentModel {
+	provider: string;
+	id: string;
+}
+
 export interface AppState {
 	version: 1;
 	workspacePath: string;
 	selectedSession?: StoredSelectedSession | undefined;
 	botOwnedSessionPin?: StoredBotOwnedSessionPin | undefined;
+	modelRecency?: StoredRecentModel[] | undefined;
 }
 
 export interface AppStateStore {
@@ -24,6 +30,7 @@ export interface AppStateStore {
 	clearSelectedSession(workspacePath: string): Promise<void>;
 	saveBotOwnedSessionPin(workspacePath: string, botOwnedSessionPin: StoredBotOwnedSessionPin): Promise<void>;
 	clearBotOwnedSessionPin(workspacePath: string): Promise<void>;
+	saveModelRecency(workspacePath: string, modelRecency: StoredRecentModel[]): Promise<void>;
 }
 
 export function createEmptyAppState(workspacePath: string): AppState {

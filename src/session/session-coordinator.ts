@@ -6,7 +6,7 @@ import type {
 	PiRuntimePort,
 	SessionInfoRecord,
 } from "../pi/pi-types.js";
-import type { AppStateStore, StoredSelectedSession } from "../state/app-state.js";
+import type { AppStateStore, StoredRecentModel, StoredSelectedSession } from "../state/app-state.js";
 import {
 	AmbiguousSessionReferenceError,
 	BusySessionError,
@@ -77,6 +77,7 @@ export class SessionCoordinator {
 	private readonly eventBinding = new SessionEventBinding();
 	private readonly activeSessionObservers = new Set<ActiveSessionObserver>();
 	private selectedSession: StoredSelectedSession | undefined;
+	private modelRecency: StoredRecentModel[] = [];
 	private activeRun: ActiveRun | undefined;
 	private initialized = false;
 	private readonly titleRefinementTimeoutMs: number;
@@ -98,6 +99,7 @@ export class SessionCoordinator {
 
 		const state = await this.stateStore.load(this.workspacePath);
 		this.selectedSession = state.selectedSession;
+		this.modelRecency = state.modelRecency ?? [];
 
 		if (this.selectedSession) {
 			this.runtime = await this.runtimeFactory.createRuntime({
@@ -178,7 +180,7 @@ export class SessionCoordinator {
 
 		return {
 			currentModel: runtime.session.activeModel,
-			availableModels: await runtime.session.listAvailableModels(),
+			availableModels: orderModelsByRecency(await runtime.session.listAvailableModels(), this.modelRecency),
 		};
 	}
 
@@ -274,6 +276,15 @@ export class SessionCoordinator {
 		}
 
 		await runtime.session.setActiveModel(model);
+		const nextModelRecency = pushRecentModel(this.modelRecency, model);
+		this.modelRecency = nextModelRecency;
+		try {
+			await this.stateStore.saveModelRecency(this.workspacePath, nextModelRecency);
+		} catch (error) {
+			console.warn(
+				`[pi-telegram-bot] Failed to persist model recency for ${getModelKey(model)}: ${formatError(error)}`,
+			);
+		}
 		return this.requireCurrentSession();
 	}
 
@@ -573,6 +584,66 @@ export class SessionCoordinator {
 			throw new BusySessionError();
 		}
 	}
+}
+
+function orderModelsByRecency(
+	availableModels: readonly PiModelDescriptor[],
+	modelRecency: readonly StoredRecentModel[],
+): PiModelDescriptor[] {
+	if (availableModels.length <= 1 || modelRecency.length === 0) {
+		return [...availableModels];
+	}
+
+	const orderedModels: PiModelDescriptor[] = [];
+	const includedModelKeys = new Set<string>();
+	const availableModelsByKey = new Map(availableModels.map((model) => [getModelKey(model), model]));
+
+	for (const recentModel of modelRecency) {
+		const key = getModelKey(recentModel);
+		const availableModel = availableModelsByKey.get(key);
+		if (!availableModel || includedModelKeys.has(key)) {
+			continue;
+		}
+
+		orderedModels.push(availableModel);
+		includedModelKeys.add(key);
+	}
+
+	for (const model of availableModels) {
+		const key = getModelKey(model);
+		if (includedModelKeys.has(key)) {
+			continue;
+		}
+
+		orderedModels.push(model);
+	}
+
+	return orderedModels;
+}
+
+function pushRecentModel(
+	modelRecency: readonly StoredRecentModel[],
+	model: PiModelDescriptor,
+): StoredRecentModel[] {
+	const recentModel = toStoredRecentModel(model);
+	const recentModelKey = getModelKey(recentModel);
+
+	return [recentModel, ...modelRecency.filter((entry) => getModelKey(entry) !== recentModelKey)];
+}
+
+function toStoredRecentModel(model: PiModelDescriptor): StoredRecentModel {
+	return {
+		provider: model.provider,
+		id: model.id,
+	};
+}
+
+function getModelKey(model: PiModelDescriptor | StoredRecentModel): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function formatError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 async function withTimeout<T>(promise: Promise<T | undefined>, timeoutMs: number): Promise<T | undefined> {

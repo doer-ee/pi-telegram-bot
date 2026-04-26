@@ -25,6 +25,7 @@ describe("SessionCoordinator", () => {
 	let workspacePath: string;
 	let statePath: string;
 	let consoleInfoMock: ReturnType<typeof vi.spyOn>;
+	let consoleWarnMock: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(async () => {
 		tempDir = await mkdtemp(join(tmpdir(), "pi-telegram-bot-"));
@@ -32,10 +33,12 @@ describe("SessionCoordinator", () => {
 		statePath = join(tempDir, "state.json");
 		await mkdir(workspacePath, { recursive: true });
 		consoleInfoMock = vi.spyOn(console, "info").mockImplementation(() => undefined);
+		consoleWarnMock = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 	});
 
 	afterEach(async () => {
 		consoleInfoMock.mockRestore();
+		consoleWarnMock.mockRestore();
 		await rm(tempDir, { recursive: true, force: true });
 	});
 
@@ -342,6 +345,123 @@ describe("SessionCoordinator", () => {
 			expect((await coordinator.getCurrentSession())?.activeModel).toEqual(nextModel);
 			expect(runtimeFactory.getSession(sessionA.path)?.activeModel).toEqual(nextModel);
 		});
+
+		it("#when successful model switches happen #then available models are ordered by workspace-global recency and persist across restart", async () => {
+			const modelA: PiModelDescriptor = {
+				provider: "openai",
+				id: "gpt-5.4",
+			};
+			const modelB: PiModelDescriptor = {
+				provider: "anthropic",
+				id: "claude-sonnet-4-5",
+			};
+			const modelC: PiModelDescriptor = {
+				provider: "google",
+				id: "gemini-2.5-pro",
+			};
+			const modelD: PiModelDescriptor = {
+				provider: "xai",
+				id: "grok-4",
+			};
+			const availableModels = [modelA, modelB, modelC, modelD];
+			const runtimeFactory = new MockPiRuntimeFactory(modelA, availableModels);
+			const stateStore = new FileAppStateStore(statePath);
+			const firstCoordinator = new SessionCoordinator(workspacePath, stateStore, runtimeFactory);
+
+			await firstCoordinator.initialize();
+			await firstCoordinator.createNewSession();
+
+			await expect(firstCoordinator.getCurrentSessionModelSelection()).resolves.toEqual({
+				currentModel: modelA,
+				availableModels,
+			});
+
+			await firstCoordinator.setCurrentSessionModel(modelB);
+			await expect(firstCoordinator.getCurrentSessionModelSelection()).resolves.toEqual({
+				currentModel: modelB,
+				availableModels: [modelB, modelA, modelC, modelD],
+			});
+
+			await firstCoordinator.setCurrentSessionModel(modelD);
+			await expect(firstCoordinator.getCurrentSessionModelSelection()).resolves.toEqual({
+				currentModel: modelD,
+				availableModels: [modelD, modelB, modelA, modelC],
+			});
+
+			expect((await stateStore.load(workspacePath)).modelRecency).toEqual([modelD, modelB]);
+
+			availableModels.splice(0, availableModels.length, modelA, modelC, modelB);
+			await firstCoordinator.dispose();
+
+			const secondCoordinator = new SessionCoordinator(workspacePath, stateStore, runtimeFactory);
+			await secondCoordinator.initialize();
+
+			await expect(secondCoordinator.getCurrentSessionModelSelection()).resolves.toEqual({
+				currentModel: modelD,
+				availableModels: [modelB, modelA, modelC],
+			});
+		});
+
+		it("#when a model switch fails #then it does not update persisted recency or reorder the picker", async () => {
+			const currentModel: PiModelDescriptor = {
+				provider: "openai",
+				id: "gpt-5.4",
+			};
+			const nextModel: PiModelDescriptor = {
+				provider: "anthropic",
+				id: "claude-sonnet-4-5",
+			};
+			const unavailableModel: PiModelDescriptor = {
+				provider: "google",
+				id: "gemini-2.5-pro",
+			};
+			const runtimeFactory = new MockPiRuntimeFactory(currentModel, [currentModel, nextModel]);
+			const stateStore = new FileAppStateStore(statePath);
+			const coordinator = new SessionCoordinator(workspacePath, stateStore, runtimeFactory);
+
+			await coordinator.initialize();
+			await coordinator.createNewSession();
+			await coordinator.setCurrentSessionModel(nextModel);
+
+			await expect(coordinator.setCurrentSessionModel(unavailableModel)).rejects.toThrow(
+				"Unavailable model google/gemini-2.5-pro",
+			);
+
+			await expect(coordinator.getCurrentSessionModelSelection()).resolves.toEqual({
+				currentModel: nextModel,
+				availableModels: [nextModel, currentModel],
+			});
+			expect((await stateStore.load(workspacePath)).modelRecency).toEqual([nextModel]);
+		});
+
+		it("#when model recency persistence fails after a successful switch #then the model change still succeeds truthfully", async () => {
+			const currentModel: PiModelDescriptor = {
+				provider: "openai",
+				id: "gpt-5.4",
+			};
+			const nextModel: PiModelDescriptor = {
+				provider: "anthropic",
+				id: "claude-sonnet-4-5",
+			};
+			const stateStore = new FailingModelRecencyStore(statePath);
+			const runtimeFactory = new MockPiRuntimeFactory(currentModel, [currentModel, nextModel]);
+			const coordinator = new SessionCoordinator(workspacePath, stateStore, runtimeFactory);
+
+			await coordinator.initialize();
+			await coordinator.createNewSession();
+
+			await expect(coordinator.setCurrentSessionModel(nextModel)).resolves.toMatchObject({
+				activeModel: nextModel,
+			});
+			await expect(coordinator.getCurrentSessionModelSelection()).resolves.toEqual({
+				currentModel: nextModel,
+				availableModels: [nextModel, currentModel],
+			});
+			expect((await stateStore.load(workspacePath)).modelRecency).toBeUndefined();
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				"[pi-telegram-bot] Failed to persist model recency for anthropic/claude-sonnet-4-5: Failed to persist model recency.",
+			);
+		});
 	});
 
 	describe("#given an active run", () => {
@@ -640,6 +760,12 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 
 	private createSessionPath(workspacePath: string): string {
 		return join(workspacePath, `.session-${this.nextSessionNumber}.jsonl`);
+	}
+}
+
+class FailingModelRecencyStore extends FileAppStateStore {
+	override async saveModelRecency(_workspacePath: string, _modelRecency: PiModelDescriptor[]): Promise<void> {
+		throw new Error("Failed to persist model recency.");
 	}
 }
 

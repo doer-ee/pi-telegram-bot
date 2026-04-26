@@ -322,6 +322,7 @@ function createAppStateStoreStub(): AppStateStore {
 		clearSelectedSession: async (_workspacePath: string) => undefined,
 		saveBotOwnedSessionPin: async (_workspacePath: string, _botOwnedSessionPin: StoredBotOwnedSessionPin) => undefined,
 		clearBotOwnedSessionPin: async (_workspacePath: string) => undefined,
+		saveModelRecency: async (_workspacePath: string, _modelRecency) => undefined,
 	};
 }
 

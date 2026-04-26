@@ -154,6 +154,17 @@ class InMemoryAppStateStore implements AppStateStore {
 			botOwnedSessionPin: undefined,
 		};
 	}
+
+	async saveModelRecency(
+		workspacePath: string,
+		modelRecency: NonNullable<AppState["modelRecency"]>,
+	): Promise<void> {
+		const state = await this.load(workspacePath);
+		this.state = {
+			...state,
+			modelRecency,
+		};
+	}
 }
 
 class MockTelegramMessageClient implements TelegramMessageClient {
