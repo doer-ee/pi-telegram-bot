@@ -1,4 +1,4 @@
-# pi-telegram-bot
+# Telegram Bot for Pi Coding Agent
 
 A private Telegram control surface for people who already use Pi locally and want to run coding sessions remotely from their phone.
 
