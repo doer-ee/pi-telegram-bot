@@ -8,6 +8,7 @@ import {
 	formatNewSessionText,
 	formatNoAvailableModelsText,
 	formatNoSelectedSessionText,
+	formatRenamePromptText,
 } from "../src/telegram/telegram-formatters.js";
 
 describe("formatNewSessionText", () => {
@@ -88,6 +89,34 @@ describe("formatCurrentSessionText", () => {
 
 		expect(formatCurrentSessionText(session)).toBe(
 			"Name: Unreadable session\nWorkspace: /workspace/project\nModel: unavailable (not reported by Pi runtime)\nMessages: unavailable (could not read persisted user prompts)\nFirst Message: Please help me fix Telegram output.",
+		);
+	});
+});
+
+describe("formatRenamePromptText", () => {
+	it("formats the rename prompt with the current name and created timestamp in America/Chicago", () => {
+		const session = createSession({
+			created: new Date("2026-04-26T14:05:00.000Z"),
+			cwd: "/workspace/project",
+			activeModel: undefined,
+			name: "Debug Telegram formatting",
+		});
+
+		expect(formatRenamePromptText(session)).toBe(
+			"Enter new name for this session\nCurrent: Debug Telegram formatting\nCreated Date/time: 2026-04-26 09:05",
+		);
+	});
+
+	it("uses the awaiting placeholder when the selected session does not have a name yet", () => {
+		const session = createSession({
+			created: new Date("2026-04-26T14:05:00.000Z"),
+			cwd: "/workspace/project",
+			activeModel: undefined,
+			name: undefined,
+		});
+
+		expect(formatRenamePromptText(session)).toBe(
+			"Enter new name for this session\nCurrent: (awaiting name generation)\nCreated Date/time: 2026-04-26 09:05",
 		);
 	});
 });

@@ -14,6 +14,7 @@ import type {
 import {
 	AmbiguousSessionReferenceError,
 	BusySessionError,
+	InvalidSessionNameError,
 	NoSelectedSessionError,
 	SessionNotFoundError,
 } from "../src/session/session-errors.js";
@@ -146,6 +147,22 @@ describe("SessionCoordinator", () => {
 				}),
 			).rejects.toBeInstanceOf(NoSelectedSessionError);
 		});
+
+		it("#when manually renaming without a selected session or with only whitespace #then it rejects clearly", async () => {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+			);
+
+			await coordinator.initialize();
+
+			await expect(coordinator.renameCurrentSession("Selected session name")).rejects.toBeInstanceOf(
+				NoSelectedSessionError,
+			);
+			await expect(coordinator.renameCurrentSession("   ")).rejects.toBeInstanceOf(InvalidSessionNameError);
+		});
 	});
 
 	describe("#given a brand new named session", () => {
@@ -258,6 +275,54 @@ describe("SessionCoordinator", () => {
 			expect(observedSessions[observedSessions.length - 1]).toEqual({
 				path: sessionA.path,
 				id: sessionA.id,
+				name: "Telegram naming after /new",
+			});
+		});
+
+		it("#when a manual rename happens before background refinement finishes #then the manual name wins and observers stay in sync", async () => {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const pendingRefinement = createDeferred<string | undefined>();
+			runtimeFactory.refineSessionTitleHandler = async () => pendingRefinement.promise;
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+				{ titleRefinementTimeoutMs: 250 },
+			);
+			const observedSessions: ActiveSessionInfo[] = [];
+			coordinator.addActiveSessionObserver({
+				onActiveSessionUpdated: (session) => {
+					observedSessions.push(session);
+				},
+			});
+
+			await coordinator.initialize();
+			const session = await coordinator.createNewSession();
+			await coordinator.sendPrompt(
+				"Please help me debug the Telegram bot session naming after /new when the first user prompt should stay responsive",
+			);
+
+			await expect(coordinator.renameCurrentSession("Manual Telegram session title")).resolves.toMatchObject({
+				path: session.path,
+				name: "Manual Telegram session title",
+			});
+
+			pendingRefinement.resolve("Telegram naming after /new");
+			await flushAsyncWork();
+
+			expect((await coordinator.getCurrentSession())?.name).toBe("Manual Telegram session title");
+			expect(runtimeFactory.getSession(session.path)?.sessionNameUpdates).toEqual([
+				"Debug the Telegram bot session naming after",
+				"Manual Telegram session title",
+			]);
+			expect(observedSessions).toContainEqual({
+				path: session.path,
+				id: session.id,
+				name: "Manual Telegram session title",
+			});
+			expect(observedSessions).not.toContainEqual({
+				path: session.path,
+				id: session.id,
 				name: "Telegram naming after /new",
 			});
 		});
@@ -795,6 +860,7 @@ class MockPiRuntime implements PiRuntimePort {
 
 class MockPiSession implements PiSessionPort {
 	readonly messages: string[] = [];
+	readonly sessionNameUpdates: string[] = [];
 	readonly sessionId: string;
 	readonly sessionFile: string;
 	readonly cwd: string;
@@ -852,6 +918,7 @@ class MockPiSession implements PiSessionPort {
 
 	setSessionName(name: string): void {
 		this.sessionName = name;
+		this.sessionNameUpdates.push(name);
 		this.modified = new Date();
 	}
 

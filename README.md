@@ -1,23 +1,27 @@
 # pi-telegram-bot
 
-`pi-telegram-bot` is a local Node.js and TypeScript Telegram bot for running Pi sessions from a private Telegram DM.
+A private Telegram control surface for people who already use Pi locally and want to run coding sessions remotely from their phone.
 
-It runs the Pi SDK in-process, locks the bot to one authorized Telegram user, and keeps session routing explicit so prompts always go to the selected Pi session.
+It solves a simple problem: when you're away from your keyboard, you can still start sessions, send prompts, switch sessions, and check status without exposing your machine through a public web app.
+
+Telegram works well here because it's fast on mobile, has reliable push notifications, and gives you a familiar command/chat UX from anywhere.
+
+**Pi** is a local coding-agent runtime/SDK that runs sessions on your machine and executes work in your configured workspace.
+
+## Security model (by design)
+
+- exactly one authorized Telegram user ID can use the bot
+- Pi runs on your local machine only
+- there is no hosted web dashboard in this project
+
+## What this project is not
+
+- not a multi-user bot
+- not a group-chat bot
+- not a remote-hosted SaaS control plane
+- not a replacement for Pi setup/auth (Pi must already work locally)
 
 > Status: MVP for a single-user, single-workspace workflow.
-
-## MVP scope
-
-This repository is intentionally narrow right now:
-
-- one authorized Telegram user
-- private DM workflow only
-- one configured workspace
-- one active Pi run at a time
-- text prompts only
-- macOS `launchd` helper scripts only
-
-It is not currently a multi-user bot, a group-chat bot, or a general remote hosting package.
 
 ## What it does
 
@@ -30,6 +34,31 @@ It is not currently a multi-user bot, a group-chat bot, or a general remote host
 - streams replies back into Telegram and falls back to plain text if Markdown formatting is rejected
 - keeps a pinned `Active session:` message in sync when the active session has a title
 - creates a quick heuristic title for new sessions, then optionally refines it in the background
+
+## Quick start (60 seconds)
+
+```bash
+bun install
+cp .env.example .env
+```
+
+Set required vars in `.env`:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_AUTHORIZED_USER_ID`
+- `PI_WORKSPACE_PATH`
+
+Run the bot:
+
+```bash
+bun run dev
+```
+
+In Telegram, message your bot:
+
+```text
+/new
+```
 
 ## Requirements
 
@@ -161,6 +190,27 @@ Behavior notes:
 - `/model` does not change the separate background title-refinement model
 - while a run is active, new prompts, `/new`, session switches, and model changes are rejected until the run finishes or you use `/abort`
 - non-text Telegram attachments are not sent to Pi in this MVP
+
+## Demo
+
+Add a short GIF or MP4 showing this exact flow:
+
+1. `/new`
+2. send a prompt
+3. `/status`
+4. `/switch`
+5. `/abort`
+
+Suggested asset paths:
+
+- `docs/demo.gif` (autoplays in GitHub README)
+- `docs/demo.mp4` (optional higher quality)
+
+Embed example:
+
+```md
+![Demo: /new → prompt → /status → /switch → /abort](docs/demo.gif)
+```
 
 ## Local-only files and repo hygiene
 

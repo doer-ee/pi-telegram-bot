@@ -16,6 +16,7 @@ describe("TELEGRAM_BOT_COMMANDS", () => {
 				{ command: "sessions", description: "List sessions and switch" },
 				{ command: "switch", description: "Switch by session id or prefix" },
 				{ command: "current", description: "Show the selected session" },
+				{ command: "rename", description: "Rename the selected session" },
 				{ command: "model", description: "Choose the current session model" },
 				{ command: "abort", description: "Abort the active run" },
 			]);
@@ -41,6 +42,7 @@ describe("formatHelpText", () => {
 			expect(helpText).toContain(helpLine);
 		}
 
+		expect(helpText).toContain("/rename - Rename the selected session");
 		expect(helpText).toContain("Any non-command text message is sent to the selected session.");
 	});
 });

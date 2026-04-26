@@ -32,12 +32,24 @@ export function formatCurrentSessionText(session: CurrentSessionEntry | undefine
 	}
 
 	return [
-		`Name: ${session.name ?? "(awaiting name generation)"}`,
+		`Name: ${formatSessionName(session.name)}`,
 		`Workspace: ${session.cwd}`,
 		`Model: ${formatModel(session.activeModel)}`,
 		`Messages: ${formatUserPromptCount(session.userPromptCount)}`,
 		`First Message: ${formatFirstMessage(session.firstMessage)}`,
 	].join("\n");
+}
+
+export function formatRenamePromptText(session: CurrentSessionEntry | SessionCatalogEntry): string {
+	return [
+		"Enter new name for this session",
+		`Current: ${formatSessionName(session.name)}`,
+		`Created Date/time: ${formatDate(session.created)}`,
+	].join("\n");
+}
+
+export function formatRenameConfirmationText(name: string): string {
+	return `Current session renamed to: ${name}`;
 }
 
 export function formatNoSelectedSessionText(): string {
@@ -145,6 +157,10 @@ function formatDate(date: Date): string {
 	) as Record<string, string>;
 
 	return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
+}
+
+function formatSessionName(name: string | undefined): string {
+	return name ?? "(awaiting name generation)";
 }
 
 function formatModel(model: PiModelDescriptor | undefined): string {

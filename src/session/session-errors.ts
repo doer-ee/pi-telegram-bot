@@ -32,3 +32,10 @@ export class SelectedModelUnavailableError extends Error {
 		this.name = "SelectedModelUnavailableError";
 	}
 }
+
+export class InvalidSessionNameError extends Error {
+	constructor() {
+		super("Session name cannot be blank. Send a non-empty name or tap cancel.");
+		this.name = "InvalidSessionNameError";
+	}
+}

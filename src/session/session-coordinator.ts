@@ -10,6 +10,7 @@ import type { AppStateStore, StoredRecentModel, StoredSelectedSession } from "..
 import {
 	AmbiguousSessionReferenceError,
 	BusySessionError,
+	InvalidSessionNameError,
 	NoSelectedSessionError,
 	SessionNotFoundError,
 } from "./session-errors.js";
@@ -76,6 +77,7 @@ export class SessionCoordinator {
 	private runtime: PiRuntimePort | undefined;
 	private readonly eventBinding = new SessionEventBinding();
 	private readonly activeSessionObservers = new Set<ActiveSessionObserver>();
+	private readonly manuallyRenamedSessionPaths = new Set<string>();
 	private selectedSession: StoredSelectedSession | undefined;
 	private modelRecency: StoredRecentModel[] = [];
 	private activeRun: ActiveRun | undefined;
@@ -288,6 +290,28 @@ export class SessionCoordinator {
 		return this.requireCurrentSession();
 	}
 
+	async renameCurrentSession(name: string): Promise<SessionCatalogEntry> {
+		const trimmedName = name.trim();
+		if (trimmedName.length === 0) {
+			throw new InvalidSessionNameError();
+		}
+
+		const runtime = await this.ensureRuntimeForSelectedSession();
+		if (!runtime) {
+			throw new NoSelectedSessionError();
+		}
+
+		const sessionPath = runtime.session.sessionFile;
+		if (!sessionPath) {
+			throw new Error("Pi runtime selected a non-persistent session, which is not supported by this bot.");
+		}
+
+		runtime.session.setSessionName(trimmedName);
+		this.manuallyRenamedSessionPaths.add(sessionPath);
+		this.emitCurrentActiveSessionUpdate();
+		return this.requireCurrentSession();
+	}
+
 	async sendPrompt(text: string, observer?: PromptObserver): Promise<PromptResult> {
 		this.assertIdle();
 		const activeRun: ActiveRun = {
@@ -489,6 +513,10 @@ export class SessionCoordinator {
 
 		const candidateTitle = await withTimeout(safeCandidatePromise, this.titleRefinementTimeoutMs);
 		if (!candidateTitle) {
+			return;
+		}
+
+		if (this.manuallyRenamedSessionPaths.has(options.sessionPath)) {
 			return;
 		}
 

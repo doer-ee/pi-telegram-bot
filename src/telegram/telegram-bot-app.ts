@@ -7,6 +7,7 @@ import type { CurrentSessionModelSelection, PiModelDescriptor } from "../pi/pi-t
 import {
 	AmbiguousSessionReferenceError,
 	BusySessionError,
+	InvalidSessionNameError,
 	NoSelectedSessionError,
 	SelectedModelUnavailableError,
 	SessionNotFoundError,
@@ -20,6 +21,8 @@ import {
 	formatNewSessionText,
 	formatNoAvailableModelsText,
 	formatNoSelectedSessionText,
+	formatRenameConfirmationText,
+	formatRenamePromptText,
 	formatSelectionChangedText,
 	formatSessionsText,
 	formatStartText,
@@ -64,11 +67,17 @@ export const MODEL_SELECTION_PAGE_CALLBACK_PREFIX = "models:page:";
 export const MODEL_SELECTION_CANCEL_CALLBACK_DATA = "models:cancel";
 export const MODEL_SWITCH_CALLBACK_PREFIX = "models:select:";
 const MODEL_SELECTION_PAGE_SIZE = 5;
+export const RENAME_CANCEL_CALLBACK_DATA = "rename:cancel";
+
+interface PendingRenameState {
+	promptMessageId: number;
+}
 
 export class TelegramBotApp {
 	private readonly bot: Telegraf<BotContext>;
 	private readonly sessionPinSync: SessionPinSync;
 	private removeActiveSessionObserver: (() => void) | undefined;
+	private pendingRename: PendingRenameState | undefined;
 	private started = false;
 
 	constructor(
@@ -159,6 +168,20 @@ export class TelegramBotApp {
 			});
 		});
 
+		this.bot.command("rename", async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				const session = await this.coordinator.getCurrentSession();
+				if (!session) {
+					throw new NoSelectedSessionError();
+				}
+
+				const promptMessage = await ctx.reply(formatRenamePromptText(session), buildRenameKeyboard());
+				this.pendingRename = {
+					promptMessageId: promptMessage.message_id,
+				};
+			});
+		});
+
 		this.bot.command("model", async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
 				const selection = await this.coordinator.getCurrentSessionModelSelection();
@@ -240,6 +263,15 @@ export class TelegramBotApp {
 			});
 		});
 
+		this.bot.action(RENAME_CANCEL_CALLBACK_DATA, async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				if (ctx.callbackQuery.message?.message_id === this.pendingRename?.promptMessageId) {
+					this.pendingRename = undefined;
+				}
+				await dismissSessionSelectionKeyboard(ctx);
+			});
+		});
+
 		this.bot.action(new RegExp(`^${SESSION_SWITCH_CALLBACK_PREFIX}(.+)$`), async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
 				const sessionId = ctx.match[1];
@@ -283,8 +315,26 @@ export class TelegramBotApp {
 		});
 
 		this.bot.on("text", async (ctx) => {
-			const text = ctx.message.text.trim();
-			if (text.length === 0 || text.startsWith("/")) {
+			const rawText = ctx.message.text;
+			const text = rawText.trim();
+			if (text.startsWith("/")) {
+				return;
+			}
+
+			if (this.pendingRename) {
+				await this.runWithErrorHandling(ctx, async () => {
+					const pendingRename = this.pendingRename;
+					const session = await this.coordinator.renameCurrentSession(rawText);
+					this.pendingRename = undefined;
+					if (pendingRename) {
+						await this.dismissPendingRenameKeyboard(ctx.chat.id, pendingRename.promptMessageId);
+					}
+					await ctx.reply(formatRenameConfirmationText(session.name ?? rawText.trim()));
+				});
+				return;
+			}
+
+			if (text.length === 0) {
 				return;
 			}
 
@@ -324,6 +374,14 @@ export class TelegramBotApp {
 		return ctx.chat?.type === "private" && ctx.from?.id === this.config.authorizedTelegramUserId;
 	}
 
+	private async dismissPendingRenameKeyboard(chatId: number, messageId: number): Promise<void> {
+		try {
+			await this.bot.telegram.editMessageReplyMarkup(chatId, messageId, undefined, undefined);
+		} catch {
+			return;
+		}
+	}
+
 	private async runWithErrorHandling(ctx: BotContext, operation: () => Promise<void>): Promise<void> {
 		try {
 			await operation();
@@ -355,6 +413,10 @@ export function buildSessionKeyboard(sessions: SessionCatalogEntry[], pageIndex 
 	rows.push([Markup.button.callback("cancel", SESSION_SELECTION_CANCEL_CALLBACK_DATA)]);
 
 	return Markup.inlineKeyboard(rows);
+}
+
+function buildRenameKeyboard() {
+	return Markup.inlineKeyboard([[Markup.button.callback("cancel", RENAME_CANCEL_CALLBACK_DATA)]]);
 }
 
 export function buildModelKeyboard(selection: CurrentSessionModelSelection, pageIndex = 0) {
@@ -619,6 +681,7 @@ function getPrivateCallbackQuerySenderId(callbackQuery: CallbackQueryUpdate["cal
 function formatUserFacingError(error: unknown): string {
 	if (
 		error instanceof BusySessionError ||
+		error instanceof InvalidSessionNameError ||
 		error instanceof ModelNotAvailableError ||
 		error instanceof NoSelectedSessionError ||
 		error instanceof SelectedModelUnavailableError ||
