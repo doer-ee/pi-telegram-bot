@@ -7,94 +7,72 @@ describe("TelegramReplyStreamer", () => {
 		vi.useRealTimers();
 	});
 
-	it("removes trailing chunks when a later streamed update is shorter", async () => {
+	it("keeps the progress message visible and sends the final assistant answer as a new message", async () => {
 		vi.useFakeTimers();
 		const client = new MockTelegramMessageClient();
 		const streamer = new TelegramReplyStreamer(client, 1, {
 			throttleMs: 0,
-			chunkSize: 5,
+			chunkSize: 128,
 		});
 
 		await streamer.start();
-		streamer.pushText("1234567890");
+		streamer.pushProgress("Reading src/session/session-coordinator.ts");
+		streamer.pushProgress("Running command: npm test");
+		streamer.pushText("Final answer");
 		await vi.runAllTimersAsync();
-		expect(client.getVisibleTexts()).toEqual(["12345", "67890"]);
+		await streamer.finish("completed");
 
-		streamer.pushText("12345");
-		await vi.runAllTimersAsync();
-
-		expect(client.getVisibleTexts()).toEqual(["12345"]);
-		expect(client.deletedMessageIds).toHaveLength(1);
+		expect(client.getVisibleTexts()).toEqual([
+			"Completed.\n• Reading src/session/session-coordinator.ts\n• Running command: npm test",
+			"Final answer",
+		]);
+		expect(client.editCalls).toHaveLength(2);
+		expect(client.sendCalls).toHaveLength(2);
+		expect(client.sendCalls[0]).toEqual({ text: "Thinking...", options: { parseMode: "plain" } });
+		expect(client.sendCalls[1]).toEqual({ text: "Final answer", options: { parseMode: "markdown" } });
 	});
 
-	it("renders the completed text exactly even when it shrinks from multiple chunks", async () => {
+	it("renders progress updates in plain text and completion in markdown without editing the final answer in place", async () => {
 		vi.useFakeTimers();
 		const client = new MockTelegramMessageClient();
 		const streamer = new TelegramReplyStreamer(client, 1, {
 			throttleMs: 0,
-			chunkSize: 5,
+			chunkSize: 128,
 		});
 
 		await streamer.start();
-		streamer.pushText("abcdefghij");
+		streamer.pushProgress("Using skill: listing-agent-research");
+		streamer.pushText("Use **bold** output");
 		await vi.runAllTimersAsync();
-		await streamer.finish("completed", "abcde");
+		await streamer.finish("completed");
 
-		expect(client.getVisibleTexts()).toEqual(["abcde"]);
-		expect(client.deletedMessageIds).toHaveLength(1);
+		expect(client.editCalls.every((call) => (call.options?.parseMode ?? "plain") === "plain")).toBe(true);
+		expect(client.sendCalls.at(-1)).toEqual({
+			text: "Use **bold** output",
+			options: { parseMode: "markdown" },
+		});
+		expect(client.editCalls.at(-1)?.text).toBe("Completed.\n• Using skill: listing-agent-research");
 	});
 
-	it("renders the aborted text exactly and cleans up stale trailing chunks", async () => {
+	it("deduplicates consecutive identical progress updates and preserves the progress log after an error", async () => {
 		vi.useFakeTimers();
 		const client = new MockTelegramMessageClient();
 		const streamer = new TelegramReplyStreamer(client, 1, {
 			throttleMs: 0,
-			chunkSize: 32,
+			chunkSize: 128,
 		});
 
 		await streamer.start();
-		streamer.pushText("long running assistant reply that spans more than a single telegram chunk");
-		await vi.runAllTimersAsync();
-		await streamer.finish("aborted", "Stopped.");
-
-		expect(client.getVisibleTexts()).toEqual(["Stopped."]);
-		expect(client.deletedMessageIds.length).toBeGreaterThanOrEqual(1);
-	});
-
-	it("renders the error text exactly and cleans up stale trailing chunks", async () => {
-		vi.useFakeTimers();
-		const client = new MockTelegramMessageClient();
-		const streamer = new TelegramReplyStreamer(client, 1, {
-			throttleMs: 0,
-			chunkSize: 7,
-		});
-
-		await streamer.start();
-		streamer.pushText("another long assistant reply");
+		streamer.pushProgress("Reading .../src/session/session-coordinator.ts");
+		streamer.pushProgress("Reading .../src/session/session-coordinator.ts");
 		await vi.runAllTimersAsync();
 		await streamer.finish("error", "Request failed: boom");
 
-		expect(client.getVisibleTexts()).toEqual(["Request", "failed:", "boom"]);
-		expect(client.deletedMessageIds.length).toBeGreaterThanOrEqual(1);
-	});
-
-	it("keeps streamed updates plain and only applies markdown formatting on completed replies", async () => {
-		vi.useFakeTimers();
-		const client = new MockTelegramMessageClient();
-		const streamer = new TelegramReplyStreamer(client, 1, {
-			throttleMs: 0,
-			chunkSize: 64,
-		});
-
-		await streamer.start();
-		streamer.pushText("Use **bold** output");
-		await vi.runAllTimersAsync();
-
-		expect(client.editCalls.at(-1)?.options?.parseMode ?? "plain").toBe("plain");
-
-		await streamer.finish("completed");
-
-		expect(client.editCalls.at(-1)?.options?.parseMode).toBe("markdown");
+		expect(client.getVisibleTexts()).toEqual([
+			"Request failed.\n• Reading .../src/session/session-coordinator.ts",
+			"Request failed: boom",
+		]);
+		expect(client.editCalls).toHaveLength(2);
 	});
 });
 

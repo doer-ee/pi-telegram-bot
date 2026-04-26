@@ -24,6 +24,7 @@ export interface BotStatus {
 
 export interface PromptObserver {
 	onPromptStarted?(session: SessionCatalogEntry): void;
+	onProgress?(update: { eventType: string; summary: string }): void;
 	onAssistantText?(text: string, done: boolean): void;
 	onPromptFinished?(result: { sessionPath: string; assistantText: string; aborted: boolean }): void;
 }
@@ -222,7 +223,8 @@ export class SessionCoordinator {
 		this.activeRun = activeRun;
 
 		let selectedSession: SessionCatalogEntry | undefined;
-		let unsubscribe: (() => void) | undefined;
+		let unsubscribeAssistantEvents: (() => void) | undefined;
+		let unsubscribeProgressEvents: (() => void) | undefined;
 
 		let lastAssistantText = "";
 		let finalDelivered = false;
@@ -250,7 +252,7 @@ export class SessionCoordinator {
 			}
 			const runtime = this.requireRuntime();
 
-			unsubscribe = this.eventBinding.addListener((event) => {
+			unsubscribeAssistantEvents = this.eventBinding.addListener((event) => {
 				if (!isAssistantMessageEvent(event)) {
 					return;
 				}
@@ -262,6 +264,10 @@ export class SessionCoordinator {
 					finalDelivered = true;
 				}
 				observer?.onAssistantText?.(nextText, isFinal);
+			});
+
+			unsubscribeProgressEvents = this.eventBinding.addProgressListener((update) => {
+				observer?.onProgress?.(update);
 			});
 
 			observer?.onPromptStarted?.(selectedSession);
@@ -285,7 +291,8 @@ export class SessionCoordinator {
 			observer?.onPromptFinished?.(result);
 			return result;
 		} finally {
-			unsubscribe?.();
+			unsubscribeAssistantEvents?.();
+			unsubscribeProgressEvents?.();
 			if (this.activeRun === activeRun) {
 				this.activeRun = undefined;
 			}

@@ -28,9 +28,35 @@ export interface SessionMessageLike {
 	stopReason?: string;
 }
 
+export interface PiAssistantMessageEvent {
+	type?: string;
+	delta?: string;
+	partial?: string;
+	text?: string;
+	[key: string]: unknown;
+}
+
 export interface PiSessionEvent {
 	type: string;
 	message?: SessionMessageLike;
+	assistantMessageEvent?: PiAssistantMessageEvent;
+	toolCallId?: string;
+	toolName?: string;
+	args?: Record<string, unknown>;
+	input?: Record<string, unknown>;
+	result?: unknown;
+	partialResult?: unknown;
+	isError?: boolean;
+	steering?: readonly string[];
+	followUp?: readonly string[];
+	reason?: string;
+	attempt?: number;
+	maxAttempts?: number;
+	delayMs?: number;
+	errorMessage?: string;
+	success?: boolean;
+	finalError?: string;
+	[key: string]: unknown;
 }
 
 export type PiSessionEventListener = (event: PiSessionEvent) => void;

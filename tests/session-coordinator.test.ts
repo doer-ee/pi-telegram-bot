@@ -275,6 +275,101 @@ describe("SessionCoordinator", () => {
 		});
 	});
 
+	describe("#given runtime progress events", () => {
+		it("#when tool and skill events arrive #then the observer receives concise safe progress summaries", async () => {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+			);
+			const secretToken = "sk-proj-AbCdEf1234567890XYZ987654321";
+
+			await coordinator.initialize();
+			const session = await coordinator.createNewSession();
+			const runtimeSession = runtimeFactory.getSession(session.path);
+			runtimeSession?.queuePromptEvents([
+				{
+					type: "tool_execution_start",
+					toolName: "grep",
+					args: {
+						include: `src/**/*OPENAI_API_KEY=${secretToken}*.ts`,
+						pattern: `Authorization: Bearer ${secretToken}`,
+					},
+				},
+				{
+					type: "tool_execution_start",
+					toolName: "glob",
+					args: {
+						pattern: `**/*github_pat_abcdefghijklmnopqrstuvwxyz1234567890.md`,
+					},
+				},
+				{
+					type: "tool_call",
+					toolName: "skill",
+					input: {
+						name: "listing-agent-research",
+						location: "/Users/jacobhere/.config/opencode/skills/listing-agent-research/SKILL.md",
+						raw: { noisy: true },
+					},
+				},
+				{
+					type: "tool_execution_start",
+					toolName: "read",
+					args: {
+						path: "/workspace/src/session/session-coordinator.ts",
+						offset: 1,
+						payload: { dump: true },
+					},
+				},
+				{
+					type: "tool_execution_start",
+					toolName: "bash",
+					args: {
+						command: `OPENAI_API_KEY=${secretToken} npm test -- --runInBand`,
+						timeout: 120,
+						payload: { dump: "too noisy" },
+					},
+				},
+				{
+					type: "tool_execution_end",
+					toolName: "bash",
+					isError: true,
+					result: {
+						stdout: "large output",
+						stderr: "more output",
+					},
+				},
+			]);
+
+			const progressSummaries: string[] = [];
+			const result = await coordinator.sendPrompt("show me progress", {
+				onProgress: (update) => {
+					progressSummaries.push(update.summary);
+				},
+			});
+
+			expect(result.assistantText).toBe("reply:show me progress");
+			expect(progressSummaries).toEqual([
+				"Searching files",
+				"Finding files",
+				"Using skill: listing-agent-research",
+				"Reading .../src/session/session-coordinator.ts",
+				"Running command: OPENAI_API_KEY=[secret] npm test -- --runInBand",
+				"A command reported an error",
+			]);
+
+			const combinedProgress = progressSummaries.join("\n");
+			expect(combinedProgress).not.toContain(secretToken);
+			expect(combinedProgress).not.toContain("github_pat_abcdefghijklmnopqrstuvwxyz1234567890");
+			expect(combinedProgress).not.toContain("Authorization:");
+			expect(combinedProgress).not.toContain("stdout");
+			expect(combinedProgress).not.toContain("stderr");
+			expect(combinedProgress).not.toContain("payload");
+			expect(combinedProgress).not.toContain("raw");
+		});
+	});
+
 	describe("#given persisted selected-session state", () => {
 		it("#when the coordinator restarts after switching among sessions #then it restores the latest selected session", async () => {
 			const runtimeFactory = new MockPiRuntimeFactory();
@@ -455,6 +550,7 @@ class MockPiSession implements PiSessionPort {
 	sessionName: string | undefined;
 	modified = new Date();
 	private readonly listeners = new Set<PiSessionEventListener>();
+	private queuedPromptEvents: PiSessionEvent[] = [];
 	private pausedPrompt: Deferred<void> | undefined;
 	private streaming = false;
 
@@ -482,6 +578,10 @@ class MockPiSession implements PiSessionPort {
 
 	async sendUserMessage(content: string): Promise<void> {
 		this.streaming = true;
+		for (const event of this.queuedPromptEvents) {
+			this.emit(event);
+		}
+		this.queuedPromptEvents = [];
 		this.emit({
 			type: "message_update",
 			message: {
@@ -513,6 +613,10 @@ class MockPiSession implements PiSessionPort {
 
 	pauseNextPrompt(): void {
 		this.pausedPrompt = createDeferred<void>();
+	}
+
+	queuePromptEvents(events: PiSessionEvent[]): void {
+		this.queuedPromptEvents.push(...events);
 	}
 
 	resumePausedPrompt(): void {

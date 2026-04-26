@@ -207,6 +207,9 @@ export class TelegramBotApp {
 				await streamer.start();
 				try {
 					const result = await this.coordinator.sendPrompt(text, {
+						onProgress: (update) => {
+							streamer.pushProgress(update.summary);
+						},
 						onAssistantText: (assistantText) => {
 							streamer.pushText(assistantText);
 						},
