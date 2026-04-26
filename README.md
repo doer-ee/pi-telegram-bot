@@ -210,7 +210,7 @@ This demo shows the core flow:
 4. `/switch`
 5. `/abort`
 
-![Demo: /new → prompt → /status → /switch → /abort](docs/demo.gif)
+<img src="docs/demo.gif" alt="Demo: /new to prompt to /status to /switch to /abort" width="320" />
 
 ## Local-only files and repo hygiene
 
