@@ -1,4 +1,10 @@
-const COMPLETE_FENCED_CODE_BLOCK_PATTERN = /```[^\n`]*\n([\s\S]*?)```/g;
+import {
+	COMPLETE_FENCED_CODE_BLOCK_PATTERN,
+	consumeMarkdownPipeTable,
+	type MarkdownPipeTableAlignment,
+	type MarkdownPipeTableBlock,
+} from "./markdown-blocks.js";
+
 const TELEGRAM_MARKDOWN_V2_ESCAPE_PATTERN = /([_*\[\]()~`>#+\-=|{}.!\\])/g;
 const TELEGRAM_MARKDOWN_V2_CODE_ESCAPE_PATTERN = /([`\\])/g;
 const PLACEHOLDER_PATTERN = /\u0000(\d+)\u0000/g;
@@ -25,7 +31,22 @@ function formatTelegramCodeBlock(code: string): string {
 }
 
 function formatTelegramMarkdownText(text: string): string {
-	return text.split("\n").map((line) => formatTelegramMarkdownLine(line)).join("\n");
+	const lines = text.split("\n");
+	const formattedLines: string[] = [];
+
+	for (let lineIndex = 0; lineIndex < lines.length;) {
+		const tableBlock = consumeMarkdownPipeTable(lines, lineIndex);
+		if (tableBlock) {
+			formattedLines.push(formatTelegramCodeBlock(renderMarkdownPipeTable(tableBlock)));
+			lineIndex = tableBlock.nextIndex;
+			continue;
+		}
+
+		formattedLines.push(formatTelegramMarkdownLine(lines[lineIndex] ?? ""));
+		lineIndex += 1;
+	}
+
+	return formattedLines.join("\n");
 }
 
 function formatTelegramMarkdownLine(line: string): string {
@@ -108,4 +129,50 @@ function escapeTelegramMarkdownV2Text(text: string): string {
 
 function escapeTelegramMarkdownV2Code(text: string): string {
 	return text.replace(TELEGRAM_MARKDOWN_V2_CODE_ESCAPE_PATTERN, "\\$1");
+}
+
+function renderMarkdownPipeTable(tableBlock: MarkdownPipeTableBlock): string {
+	const columnWidths = tableBlock.rows[0]?.map((_cell, columnIndex) => {
+		const widestCellLength = tableBlock.rows.reduce((widestLength, row) => {
+			return Math.max(widestLength, row[columnIndex]?.length ?? 0);
+		}, 0);
+		return Math.max(3, widestCellLength);
+	}) ?? [];
+
+	const renderedRows = [
+		renderMarkdownPipeTableRow(tableBlock.rows[0] ?? [], columnWidths, tableBlock.alignments),
+		columnWidths.map((width) => "-".repeat(width)).join(" | "),
+		...tableBlock.rows.slice(1).map((row) => renderMarkdownPipeTableRow(row, columnWidths, tableBlock.alignments)),
+	];
+
+	return renderedRows.join("\n");
+}
+
+function renderMarkdownPipeTableRow(
+	row: string[],
+	columnWidths: number[],
+	alignments: MarkdownPipeTableAlignment[],
+): string {
+	return row
+		.map((cell, columnIndex) => formatMarkdownPipeTableCell(cell, columnWidths[columnIndex] ?? cell.length, alignments[columnIndex] ?? "left"))
+		.join(" | ");
+}
+
+function formatMarkdownPipeTableCell(
+	cell: string,
+	width: number,
+	alignment: MarkdownPipeTableAlignment,
+): string {
+	switch (alignment) {
+		case "right":
+			return cell.padStart(width);
+		case "center": {
+			const totalPadding = Math.max(0, width - cell.length);
+			const leftPadding = Math.floor(totalPadding / 2);
+			const rightPadding = totalPadding - leftPadding;
+			return `${" ".repeat(leftPadding)}${cell}${" ".repeat(rightPadding)}`;
+		}
+		default:
+			return cell.padEnd(width);
+	}
 }
