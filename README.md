@@ -1,5 +1,7 @@
 # Telegram Bot for Pi Coding Agent
 
+![CI](https://github.com/doer-ee/pi-telegram-bot/actions/workflows/ci.yml/badge.svg)
+
 A private Telegram control surface for people who already use Pi locally and want to run coding sessions remotely from their phone.
 
 It solves a simple problem: when you're away from your keyboard, you can still start sessions, send prompts, switch sessions, and check status without exposing your machine through a public web app.
@@ -69,6 +71,13 @@ In Telegram, message your bot:
 - a local Pi setup that already works on this machine
 
 This project does not log you into Pi or configure provider credentials for you. Pi must already be usable through the Pi SDK before this bot starts.
+
+## Tested on
+
+- macOS
+- Node.js v24.11.1
+- Bun 1.3.12
+- `@mariozechner/pi-coding-agent` ^0.70.2
 
 ## Installation and setup
 
