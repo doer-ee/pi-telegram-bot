@@ -15,4 +15,4 @@ else
 	log_info "LaunchAgent plist is already absent: $INSTALLED_PLIST_PATH"
 fi
 
-log_info "Project log files were left in place under $PROJECT_LOG_DIR"
+log_info "LaunchAgent log files were left in place under $PROJECT_LOG_DIR"
