@@ -202,7 +202,7 @@ Behavior notes:
 
 ## Demo
 
-Add a short GIF or MP4 showing this exact flow:
+This demo shows the core flow:
 
 1. `/new`
 2. send a prompt
@@ -210,16 +210,7 @@ Add a short GIF or MP4 showing this exact flow:
 4. `/switch`
 5. `/abort`
 
-Suggested asset paths:
-
-- `docs/demo.gif` (autoplays in GitHub README)
-- `docs/demo.mp4` (optional higher quality)
-
-Embed example:
-
-```md
 ![Demo: /new → prompt → /status → /switch → /abort](docs/demo.gif)
-```
 
 ## Local-only files and repo hygiene
 
