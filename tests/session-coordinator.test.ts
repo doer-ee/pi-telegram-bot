@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+	PiModelDescriptor,
 	PiRuntimeFactory,
 	PiRuntimePort,
 	PiSessionEvent,
@@ -38,6 +39,26 @@ describe("SessionCoordinator", () => {
 	});
 
 	describe("#given no selected session", () => {
+		it("#when creating a new session #then the selected catalog entry includes the active runtime model", async () => {
+			const activeModel: PiModelDescriptor = {
+				provider: "openai",
+				id: "gpt-5.4",
+			};
+			const runtimeFactory = new MockPiRuntimeFactory(activeModel);
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+			);
+
+			await coordinator.initialize();
+			const session = await coordinator.createNewSession();
+
+			expect(session.cwd).toBe(workspacePath);
+			expect(session.activeModel).toEqual(activeModel);
+			expect((await coordinator.getCurrentSession())?.activeModel).toEqual(activeModel);
+		});
+
 		it("#when sending a short freeform prompt #then it auto-creates the session and still attempts background refinement", async () => {
 			const runtimeFactory = new MockPiRuntimeFactory();
 			const coordinator = new SessionCoordinator(
@@ -80,6 +101,27 @@ describe("SessionCoordinator", () => {
 
 			expect(combinedLogs).not.toContain(secret);
 			expect(combinedLogs).toContain("OPENAI_API_KEY=[secret]");
+		});
+
+		it("#when requesting the current session prompt count and the narrow lookup fails #then it degrades without throwing or guessing", async () => {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			runtimeFactory.getPersistedUserPromptCountHandler = async () => undefined;
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+			);
+
+			await coordinator.initialize();
+			const session = await coordinator.createNewSession();
+			await coordinator.sendPrompt("hello from telegram");
+
+			await expect(coordinator.getCurrentSessionWithPromptCount()).resolves.toMatchObject({
+				path: session.path,
+				messageCount: 1,
+				userPromptCount: undefined,
+			});
+			expect(runtimeFactory.persistedUserPromptCountRequests).toEqual([session.path]);
 		});
 	});
 
@@ -445,18 +487,23 @@ describe("SessionCoordinator", () => {
 class MockPiRuntimeFactory implements PiRuntimeFactory {
 	private readonly sessions = new Map<string, MockPiSession>();
 	private nextSessionNumber = 1;
+
+	constructor(private readonly activeModel?: PiModelDescriptor) {}
+
 	readonly refineRequests: Array<{
 		workspacePath: string;
 		prompt: string;
 		heuristicTitle: string;
 		timeoutMs: number;
 	}> = [];
+	readonly persistedUserPromptCountRequests: string[] = [];
 	refineSessionTitleHandler: ((request: {
 		workspacePath: string;
 		prompt: string;
 		heuristicTitle: string;
 		timeoutMs: number;
 	}) => Promise<string | undefined>) | undefined;
+	getPersistedUserPromptCountHandler: ((sessionPath: string) => Promise<number | undefined>) | undefined;
 
 	async createRuntime(options: { workspacePath: string; selectedSessionPath?: string }): Promise<PiRuntimePort> {
 		const sessionPath = options.selectedSessionPath ?? this.createSessionPath(options.workspacePath);
@@ -469,6 +516,15 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 			.filter((session) => session.cwd === workspacePath)
 			.map((session) => session.toSessionInfo())
 			.sort((left, right) => right.modified.getTime() - left.modified.getTime());
+	}
+
+	async getPersistedUserPromptCount(sessionPath: string): Promise<number | undefined> {
+		this.persistedUserPromptCountRequests.push(sessionPath);
+		if (this.getPersistedUserPromptCountHandler) {
+			return this.getPersistedUserPromptCountHandler(sessionPath);
+		}
+
+		return this.sessions.get(sessionPath)?.messages.length ?? 0;
 	}
 
 	getSession(path: string): MockPiSession | undefined {
@@ -507,7 +563,12 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 			return existing;
 		}
 
-		const session = new MockPiSession(path, workspacePath, `s${this.nextSessionNumber}-session`);
+		const session = new MockPiSession(
+			path,
+			workspacePath,
+			`s${this.nextSessionNumber}-session`,
+			this.activeModel,
+		);
 		this.nextSessionNumber += 1;
 		this.sessions.set(path, session);
 		return session;
@@ -554,10 +615,14 @@ class MockPiSession implements PiSessionPort {
 	private pausedPrompt: Deferred<void> | undefined;
 	private streaming = false;
 
-	constructor(path: string, cwd: string, sessionId: string) {
+	constructor(path: string, cwd: string, sessionId: string, private readonly model?: PiModelDescriptor) {
 		this.sessionFile = path;
 		this.cwd = cwd;
 		this.sessionId = sessionId;
+	}
+
+	get activeModel(): PiModelDescriptor | undefined {
+		return this.model;
 	}
 
 	get isStreaming(): boolean {

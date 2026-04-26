@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import {
 	type AgentSessionEvent,
 	type AgentSessionRuntimeDiagnostic,
@@ -12,6 +13,7 @@ import {
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { DEFAULT_TITLE_REFINEMENT_MODEL } from "../config/title-refinement-model.js";
 import type {
+	PiModelDescriptor,
 	PiRuntimeFactory,
 	PiRuntimePort,
 	PiSessionEvent,
@@ -77,6 +79,10 @@ export class PiSdkRuntimeFactory implements PiRuntimeFactory {
 
 	async listSessions(workspacePath: string): Promise<SessionInfoRecord[]> {
 		return SessionManager.list(workspacePath);
+	}
+
+	async getPersistedUserPromptCount(sessionPath: string): Promise<number | undefined> {
+		return countPersistedUserPromptEntries(sessionPath);
 	}
 
 	async updateSessionName(sessionPath: string, name: string): Promise<void> {
@@ -238,6 +244,69 @@ function findProviderQualifiedModel(
 	);
 }
 
+async function countPersistedUserPromptEntries(sessionPath: string): Promise<number | undefined> {
+	try {
+		const content = await readFile(sessionPath, "utf8");
+		return countUserPromptEntriesFromPersistedSession(content);
+	} catch (error) {
+		return isErrorWithCode(error, "ENOENT") ? 0 : undefined;
+	}
+}
+
+function countUserPromptEntriesFromPersistedSession(content: string): number | undefined {
+	const lines = content
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0);
+
+	if (lines.length === 0) {
+		return undefined;
+	}
+
+	let sawSessionHeader = false;
+	let userPromptCount = 0;
+
+	for (const line of lines) {
+		let entry: unknown;
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			return undefined;
+		}
+
+		if (!isRecord(entry) || typeof entry.type !== "string") {
+			return undefined;
+		}
+
+		if (entry.type === "session") {
+			sawSessionHeader = true;
+			continue;
+		}
+
+		if (entry.type !== "message") {
+			continue;
+		}
+
+		if (!isRecord(entry.message) || typeof entry.message.role !== "string") {
+			return undefined;
+		}
+
+		if (entry.message.role === "user") {
+			userPromptCount += 1;
+		}
+	}
+
+	return sawSessionHeader ? userPromptCount : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function isErrorWithCode(error: unknown, code: string): error is NodeJS.ErrnoException {
+	return isRecord(error) && error.code === code;
+}
+
 class TitleRefinementUnavailableError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -284,6 +353,18 @@ class PiSdkSessionAdapter implements PiSessionPort {
 
 	get sessionName(): string | undefined {
 		return this.session.sessionName;
+	}
+
+	get activeModel(): PiModelDescriptor | undefined {
+		const model = this.session.model;
+		if (!model) {
+			return undefined;
+		}
+
+		return {
+			provider: model.provider,
+			id: model.id,
+		};
 	}
 
 	get isStreaming(): boolean {

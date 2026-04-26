@@ -4,6 +4,7 @@ import { Telegram } from "telegraf";
 import type { Update } from "telegraf/types";
 import type { AppConfig } from "../src/config/app-config.js";
 import type {
+	PiModelDescriptor,
 	PiRuntimeFactory,
 	PiRuntimePort,
 	PiSessionEvent,
@@ -246,6 +247,10 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 			.sort((left, right) => right.modified.getTime() - left.modified.getTime());
 	}
 
+	async getPersistedUserPromptCount(sessionPath: string): Promise<number | undefined> {
+		return this.sessions.get(sessionPath)?.messages.length ?? 0;
+	}
+
 	async updateSessionName(sessionPath: string, name: string): Promise<void> {
 		const session = this.sessions.get(sessionPath);
 		if (!session) {
@@ -326,6 +331,10 @@ class MockPiSession implements PiSessionPort {
 		this.sessionFile = path;
 		this.cwd = cwd;
 		this.sessionId = sessionId;
+	}
+
+	get activeModel(): PiModelDescriptor | undefined {
+		return undefined;
 	}
 
 	get isStreaming(): boolean {

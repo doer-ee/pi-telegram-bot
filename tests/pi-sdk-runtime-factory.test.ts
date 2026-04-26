@@ -1,6 +1,10 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { readFileMock } = vi.hoisted(() => ({
+	readFileMock: vi.fn(),
+}));
+
 const {
 	createAgentSessionFromServicesMock,
 	createAgentSessionRuntimeMock,
@@ -19,6 +23,10 @@ const {
 	sessionManagerListMock: vi.fn(),
 	sessionManagerOpenMock: vi.fn(),
 	runSessionTitleRefinementWithTimeoutMock: vi.fn(),
+}));
+
+vi.mock("node:fs/promises", () => ({
+	readFile: readFileMock,
 }));
 
 vi.mock("@mariozechner/pi-coding-agent", () => ({
@@ -54,6 +62,7 @@ describe("PiSdkRuntimeFactory", () => {
 		sessionManagerOpenMock.mockReturnValue(sessionManager);
 		sessionManagerInMemoryMock.mockReturnValue({ kind: "in-memory-session-manager" });
 		sessionManagerListMock.mockResolvedValue([]);
+		readFileMock.mockResolvedValue("");
 
 		const runtimeSession = createRuntimeSession();
 		createAgentSessionRuntimeMock.mockImplementation(async (createRuntimeFactory, options) => {
@@ -85,6 +94,133 @@ describe("PiSdkRuntimeFactory", () => {
 
 	afterEach(() => {
 		consoleInfoMock.mockRestore();
+	});
+
+	it("#given a runtime session with an active conversation model #when creating the runtime #then the session adapter exposes that actual model", async () => {
+		const activeModel = createModel({ provider: "anthropic", id: "claude-sonnet-4-5" });
+		const titleModel = createModel({ provider: "openai", id: "gpt-5.4-mini" });
+
+		setAvailableModels([activeModel, titleModel]);
+		createAgentSessionRuntimeMock.mockImplementation(async (createRuntimeFactory, options) => {
+			await createRuntimeFactory({
+				cwd: options.cwd,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: undefined,
+			});
+
+			return {
+				diagnostics: [],
+				dispose: vi.fn(),
+				newSession: vi.fn(),
+				session: createRuntimeSession({ model: activeModel }),
+				switchSession: vi.fn(),
+			};
+		});
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir", "openai/gpt-5.4-mini");
+		const runtime = await factory.createRuntime({ workspacePath: "/workspace" });
+
+		expect(runtime.session.activeModel).toEqual({
+			provider: "anthropic",
+			id: "claude-sonnet-4-5",
+		});
+	});
+
+	it("#given persisted sessions #when listing sessions #then it leaves the broad SessionManager listing untouched", async () => {
+		sessionManagerListMock.mockResolvedValue([
+			{
+				path: "/workspace/.pi/sessions/session.jsonl",
+				id: "session-1",
+				cwd: "/workspace",
+				name: "Prompt counting",
+				created: new Date("2026-04-26T14:00:00.000Z"),
+				modified: new Date("2026-04-26T14:05:00.000Z"),
+				messageCount: 5,
+				firstMessage: "first user prompt",
+				allMessagesText: "first user prompt assistant reply follow-up",
+			},
+		]);
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+
+		await expect(factory.listSessions("/workspace")).resolves.toEqual([
+			{
+				path: "/workspace/.pi/sessions/session.jsonl",
+				id: "session-1",
+				cwd: "/workspace",
+				name: "Prompt counting",
+				created: new Date("2026-04-26T14:00:00.000Z"),
+				modified: new Date("2026-04-26T14:05:00.000Z"),
+				messageCount: 5,
+				firstMessage: "first user prompt",
+				allMessagesText: "first user prompt assistant reply follow-up",
+			},
+		]);
+		expect(readFileMock).not.toHaveBeenCalled();
+	});
+
+	it("#given persisted session entries with assistant and user messages #when requesting the selected-session prompt count #then it counts only real persisted user message entries", async () => {
+		readFileMock.mockResolvedValue([
+			JSON.stringify({
+				type: "session",
+				id: "session-1",
+				timestamp: "2026-04-26T14:00:00.000Z",
+				cwd: "/workspace",
+			}),
+			JSON.stringify({
+				type: "message",
+				id: "entry-1",
+				parentId: null,
+				timestamp: "2026-04-26T14:00:01.000Z",
+				message: { role: "user", content: "first user prompt" },
+			}),
+			JSON.stringify({
+				type: "message",
+				id: "entry-2",
+				parentId: "entry-1",
+				timestamp: "2026-04-26T14:00:02.000Z",
+				message: { role: "assistant", content: "assistant reply" },
+			}),
+			JSON.stringify({
+				type: "custom_message",
+				customType: "note",
+				content: "ignored",
+				display: true,
+				id: "entry-3",
+				parentId: "entry-2",
+				timestamp: "2026-04-26T14:00:03.000Z",
+			}),
+			JSON.stringify({
+				type: "message",
+				id: "entry-4",
+				parentId: "entry-3",
+				timestamp: "2026-04-26T14:00:04.000Z",
+				message: { role: "user", content: [{ type: "text", text: "follow-up" }] },
+			}),
+		].join("\n"));
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+
+		await expect(factory.getPersistedUserPromptCount("/workspace/.pi/sessions/session.jsonl")).resolves.toBe(2);
+		expect(readFileMock).toHaveBeenCalledWith("/workspace/.pi/sessions/session.jsonl", "utf8");
+	});
+
+	it("#given an unreadable selected session path #when requesting the prompt count #then it degrades safely instead of throwing", async () => {
+		readFileMock.mockRejectedValue(Object.assign(new Error("permission denied"), { code: "EACCES" }));
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+
+		await expect(factory.getPersistedUserPromptCount("/workspace/.pi/sessions/session.jsonl")).resolves.toBeUndefined();
+	});
+
+	it("#given a corrupt selected session file #when requesting the prompt count #then it degrades safely instead of guessing", async () => {
+		readFileMock.mockResolvedValue(
+			`${JSON.stringify({ type: "session", id: "session-1", timestamp: "2026-04-26T14:00:00.000Z", cwd: "/workspace" })}\nnot-json`,
+		);
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+
+		await expect(factory.getPersistedUserPromptCount("/workspace/.pi/sessions/session.jsonl")).resolves.toBeUndefined();
 	});
 
 	it("#given a dedicated title model override #when runtime and refinement sessions are created #then only refinement receives that configured model", async () => {
@@ -276,11 +412,12 @@ function setAvailableModels(
 	});
 }
 
-function createRuntimeSession() {
+function createRuntimeSession(overrides?: { model?: Model<Api> | undefined }) {
 	return {
 		abort: vi.fn(),
 		bindExtensions: vi.fn().mockResolvedValue(undefined),
 		isStreaming: false,
+		model: overrides?.model,
 		sendUserMessage: vi.fn(),
 		sessionFile: "/workspace/.pi/sessions/session.jsonl",
 		sessionId: "session-1",

@@ -169,11 +169,11 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 		await harness.handleUpdate(createSessionsCommandUpdate());
 
 		expect(harness.apiCalls).toHaveLength(1);
-		expect(harness.apiCalls[0]).toMatchObject({
+			expect(harness.apiCalls[0]).toMatchObject({
 			method: "sendMessage",
 			payload: {
 				chat_id: CHAT_ID,
-				text: "Sessions:\n* 1. 11111111 Alpha | 2026-04-25 00:00\n   first message for Alpha\n  2. 22222222 Beta | 2026-04-25 00:00\n   first message for Beta\n  3. 33333333 Gamma | 2026-04-25 00:00\n   first message for Gamma\n\nTap a button below or use /switch <session-id-prefix-or-id>.",
+				text: "Sessions:\n* 1. 11111111 Alpha | 2026-04-24 19:00\n   first message for Alpha\n  2. 22222222 Beta | 2026-04-24 19:00\n   first message for Beta\n  3. 33333333 Gamma | 2026-04-24 19:00\n   first message for Gamma\n\nTap a button below or use /switch <session-id-prefix-or-id>.",
 				reply_markup: {
 					inline_keyboard: [
 						[{ text: "current: Alpha", callback_data: `switch:${ALPHA_SESSION.id}`, hide: false }],
@@ -332,6 +332,11 @@ function createUnusedRuntimeFactory(): PiRuntimeFactory {
 		},
 		listSessions: async (_workspacePath: string) => {
 			throw new Error("Unexpected listSessions call on runtime factory in TelegramBotApp session selection test.");
+		},
+		getPersistedUserPromptCount: async (_sessionPath: string) => {
+			throw new Error(
+				"Unexpected getPersistedUserPromptCount call in TelegramBotApp session selection test.",
+			);
 		},
 		updateSessionName: async (_sessionPath: string, _name: string) => {
 			throw new Error("Unexpected updateSessionName call in TelegramBotApp session selection test.");

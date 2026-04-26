@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import type { PiRuntimeFactory, PiRuntimePort, SessionInfoRecord } from "../pi/pi-types.js";
+import type { PiModelDescriptor, PiRuntimeFactory, PiRuntimePort, SessionInfoRecord } from "../pi/pi-types.js";
 import type { AppStateStore, StoredSelectedSession } from "../state/app-state.js";
 import { AmbiguousSessionReferenceError, BusySessionError, SessionNotFoundError } from "./session-errors.js";
 import { SessionEventBinding } from "./session-event-binding.js";
@@ -11,8 +11,13 @@ import {
 import { logHeuristicSessionTitle, logSessionTitleRefinementOutcome } from "./session-title-logging.js";
 
 export interface SessionCatalogEntry extends SessionInfoRecord {
+	activeModel?: PiModelDescriptor | undefined;
 	isSelected: boolean;
 	source: "pi" | "persisted";
+}
+
+export interface CurrentSessionEntry extends SessionCatalogEntry {
+	userPromptCount?: number | undefined;
 }
 
 export interface BotStatus {
@@ -97,8 +102,11 @@ export class SessionCoordinator {
 	async listSessions(): Promise<SessionCatalogEntry[]> {
 		const sessions = await this.runtimeFactory.listSessions(this.workspacePath);
 		const selectedPath = this.selectedSession?.path;
+		const activeSessionPath = this.runtime?.session.sessionFile;
+		const activeModel = this.runtime?.session.activeModel;
 		const catalog: SessionCatalogEntry[] = sessions.map((session) => ({
 			...session,
+			activeModel: session.path === activeSessionPath ? activeModel : undefined,
 			isSelected: session.path === selectedPath,
 			source: "pi" as const,
 		}));
@@ -110,6 +118,7 @@ export class SessionCoordinator {
 				id: this.selectedSession.sessionId,
 				cwd: this.workspacePath,
 				name: this.runtime?.session.sessionName,
+				activeModel: this.runtime?.session.activeModel,
 				created: selectedAt,
 				modified: selectedAt,
 				messageCount: 0,
@@ -129,6 +138,25 @@ export class SessionCoordinator {
 		}
 
 		return (await this.listSessions()).find((session) => session.path === this.selectedSession?.path);
+	}
+
+	async getCurrentSessionWithPromptCount(): Promise<CurrentSessionEntry | undefined> {
+		const session = await this.getCurrentSession();
+		if (!session) {
+			return undefined;
+		}
+
+		let userPromptCount: number | undefined;
+		try {
+			userPromptCount = await this.runtimeFactory.getPersistedUserPromptCount(session.path);
+		} catch {
+			userPromptCount = undefined;
+		}
+
+		return {
+			...session,
+			userPromptCount,
+		};
 	}
 
 	async getStatus(): Promise<BotStatus> {

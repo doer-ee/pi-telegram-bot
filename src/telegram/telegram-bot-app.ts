@@ -137,7 +137,9 @@ export class TelegramBotApp {
 		});
 
 		this.bot.command("current", async (ctx) => {
-			await ctx.reply(formatCurrentSessionText(await this.coordinator.getCurrentSession()));
+			await this.runWithErrorHandling(ctx, async () => {
+				await ctx.reply(formatCurrentSessionText(await this.coordinator.getCurrentSessionWithPromptCount()));
+			});
 		});
 
 		this.bot.command("abort", async (ctx) => {

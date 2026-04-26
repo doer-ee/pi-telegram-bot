@@ -1,5 +1,6 @@
 import { basename } from "node:path";
-import type { BotStatus, SessionCatalogEntry } from "../session/session-coordinator.js";
+import type { PiModelDescriptor } from "../pi/pi-types.js";
+import type { BotStatus, CurrentSessionEntry, SessionCatalogEntry } from "../session/session-coordinator.js";
 import { getTelegramHelpLines } from "./telegram-command-definitions.js";
 
 export function formatHelpText(): string {
@@ -25,18 +26,17 @@ export function formatStatusText(status: BotStatus): string {
 	].join("\n");
 }
 
-export function formatCurrentSessionText(session: SessionCatalogEntry | undefined): string {
+export function formatCurrentSessionText(session: CurrentSessionEntry | undefined): string {
 	if (!session) {
 		return "No session is selected. Use /new, /sessions, or send a freeform message to create one.";
 	}
 
 	return [
-		"Selected session:",
-		`- id: ${session.id}`,
-		`- name: ${session.name ?? basename(session.path)}`,
-		`- path: ${session.path}`,
-		`- messages: ${session.messageCount}`,
-		`- first message: ${session.firstMessage}`,
+		`Name: ${session.name ?? "(awaiting name generation)"}`,
+		`Workspace: ${session.cwd}`,
+		`Model: ${formatModel(session.activeModel)}`,
+		`Messages: ${formatUserPromptCount(session.userPromptCount)}`,
+		`First Message: ${formatFirstMessage(session.firstMessage)}`,
 	].join("\n");
 }
 
@@ -76,7 +76,11 @@ export function formatSelectionChangedText(session: SessionCatalogEntry): string
 }
 
 export function formatNewSessionText(session: SessionCatalogEntry): string {
-	return `Created and selected new session ${session.id.slice(0, 8)} at ${session.path}.`;
+	return [
+		`New Session - ${formatDate(session.created)}`,
+		`Workspace: ${session.cwd}`,
+		`Model: ${formatModel(session.activeModel)}`,
+	].join("\n");
 }
 
 function formatSelectedSessionSummary(session: SessionCatalogEntry | undefined): string {
@@ -88,7 +92,43 @@ function formatSelectedSessionSummary(session: SessionCatalogEntry | undefined):
 }
 
 function formatDate(date: Date): string {
-	return date.toISOString().replace("T", " ").slice(0, 16);
+	const parts = new Intl.DateTimeFormat("en-US", {
+		timeZone: "America/Chicago",
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+		hour12: false,
+	}).formatToParts(date);
+
+	const values = Object.fromEntries(
+		parts
+			.filter((part) => part.type !== "literal")
+			.map((part) => [part.type, part.value]),
+	) as Record<string, string>;
+
+	return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
+}
+
+function formatModel(model: PiModelDescriptor | undefined): string {
+	if (!model) {
+		return "unavailable (not reported by Pi runtime)";
+	}
+
+	return `${model.provider}/${model.id}`;
+}
+
+function formatFirstMessage(firstMessage: string): string {
+	return firstMessage === "(awaiting first assistant reply)"
+		? "(awaiting first message)"
+		: firstMessage;
+}
+
+function formatUserPromptCount(userPromptCount: number | undefined): string {
+	return userPromptCount === undefined
+		? "unavailable (could not read persisted user prompts)"
+		: String(userPromptCount);
 }
 
 function truncate(value: string, maxLength: number): string {

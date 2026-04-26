@@ -28,6 +28,11 @@ export interface SessionMessageLike {
 	stopReason?: string;
 }
 
+export interface PiModelDescriptor {
+	provider: string;
+	id: string;
+}
+
 export interface PiAssistantMessageEvent {
 	type?: string;
 	delta?: string;
@@ -65,6 +70,7 @@ export interface PiSessionPort {
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
 	readonly sessionName: string | undefined;
+	readonly activeModel: PiModelDescriptor | undefined;
 	readonly isStreaming: boolean;
 	subscribe(listener: PiSessionEventListener): () => void;
 	setSessionName(name: string): void;
@@ -82,6 +88,7 @@ export interface PiRuntimePort {
 export interface PiRuntimeFactory {
 	createRuntime(options: { workspacePath: string; selectedSessionPath?: string }): Promise<PiRuntimePort>;
 	listSessions(workspacePath: string): Promise<SessionInfoRecord[]>;
+	getPersistedUserPromptCount(sessionPath: string): Promise<number | undefined>;
 	updateSessionName(sessionPath: string, name: string): Promise<void>;
 	refineSessionTitle(request: SessionTitleRefinementRequest): Promise<string | undefined>;
 }
