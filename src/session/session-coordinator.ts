@@ -1,7 +1,18 @@
 import { basename } from "node:path";
-import type { PiModelDescriptor, PiRuntimeFactory, PiRuntimePort, SessionInfoRecord } from "../pi/pi-types.js";
+import type {
+	CurrentSessionModelSelection,
+	PiModelDescriptor,
+	PiRuntimeFactory,
+	PiRuntimePort,
+	SessionInfoRecord,
+} from "../pi/pi-types.js";
 import type { AppStateStore, StoredSelectedSession } from "../state/app-state.js";
-import { AmbiguousSessionReferenceError, BusySessionError, SessionNotFoundError } from "./session-errors.js";
+import {
+	AmbiguousSessionReferenceError,
+	BusySessionError,
+	NoSelectedSessionError,
+	SessionNotFoundError,
+} from "./session-errors.js";
 import { SessionEventBinding } from "./session-event-binding.js";
 import { extractMessageText, isAssistantMessageEvent } from "./message-text.js";
 import {
@@ -159,6 +170,18 @@ export class SessionCoordinator {
 		};
 	}
 
+	async getCurrentSessionModelSelection(): Promise<CurrentSessionModelSelection | undefined> {
+		const runtime = await this.ensureRuntimeForSelectedSession();
+		if (!runtime) {
+			return undefined;
+		}
+
+		return {
+			currentModel: runtime.session.activeModel,
+			availableModels: await runtime.session.listAvailableModels(),
+		};
+	}
+
 	async getStatus(): Promise<BotStatus> {
 		const listedSessions = await this.runtimeFactory.listSessions(this.workspacePath);
 		return {
@@ -240,6 +263,18 @@ export class SessionCoordinator {
 		}
 
 		throw new SessionNotFoundError(normalizedReference);
+	}
+
+	async setCurrentSessionModel(model: PiModelDescriptor): Promise<SessionCatalogEntry> {
+		this.assertIdle();
+
+		const runtime = await this.ensureRuntimeForSelectedSession();
+		if (!runtime) {
+			throw new NoSelectedSessionError();
+		}
+
+		await runtime.session.setActiveModel(model);
+		return this.requireCurrentSession();
 	}
 
 	async sendPrompt(text: string, observer?: PromptObserver): Promise<PromptResult> {
@@ -382,6 +417,22 @@ export class SessionCoordinator {
 		}
 
 		return this.requireCurrentSession();
+	}
+
+	private async ensureRuntimeForSelectedSession(): Promise<PiRuntimePort | undefined> {
+		if (!this.selectedSession) {
+			return undefined;
+		}
+
+		if (!this.runtime) {
+			this.runtime = await this.runtimeFactory.createRuntime({
+				workspacePath: this.workspacePath,
+				selectedSessionPath: this.selectedSession.path,
+			});
+			await this.afterSessionReplacement(this.selectedSession.selectedAt);
+		}
+
+		return this.runtime;
 	}
 
 	private requireRuntime(): PiRuntimePort {

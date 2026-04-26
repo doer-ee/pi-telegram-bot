@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import type { PiModelDescriptor } from "../pi/pi-types.js";
+import type { CurrentSessionModelSelection, PiModelDescriptor } from "../pi/pi-types.js";
 import type { BotStatus, CurrentSessionEntry, SessionCatalogEntry } from "../session/session-coordinator.js";
 import { getTelegramHelpLines } from "./telegram-command-definitions.js";
 
@@ -28,7 +28,7 @@ export function formatStatusText(status: BotStatus): string {
 
 export function formatCurrentSessionText(session: CurrentSessionEntry | undefined): string {
 	if (!session) {
-		return "No session is selected. Use /new, /sessions, or send a freeform message to create one.";
+		return formatNoSelectedSessionText();
 	}
 
 	return [
@@ -38,6 +38,42 @@ export function formatCurrentSessionText(session: CurrentSessionEntry | undefine
 		`Messages: ${formatUserPromptCount(session.userPromptCount)}`,
 		`First Message: ${formatFirstMessage(session.firstMessage)}`,
 	].join("\n");
+}
+
+export function formatNoSelectedSessionText(): string {
+	return "No session is selected. Use /new, /sessions, or send a freeform message to create one.";
+}
+
+export interface FormatModelSelectionTextOptions {
+	pageIndex?: number;
+	pageCount?: number;
+}
+
+export function formatModelSelectionText(
+	selection: CurrentSessionModelSelection,
+	options?: FormatModelSelectionTextOptions,
+): string {
+	const title =
+		options?.pageCount && options.pageCount > 1
+			? `Models (page ${(options.pageIndex ?? 0) + 1}/${options.pageCount}):`
+			: "Models:";
+
+	return [
+		title,
+		`Current: ${formatModel(selection.currentModel)}`,
+		"",
+		"Tap a button below to switch the current session model.",
+	].join("\n");
+}
+
+export function formatNoAvailableModelsText(selection: CurrentSessionModelSelection): string {
+	return ["Models:", `Current: ${formatModel(selection.currentModel)}`, "", "No auth-configured models are currently available."].join(
+		"\n",
+	);
+}
+
+export function formatModelSelectionChangedText(model: PiModelDescriptor): string {
+	return `Current session model set to ${formatModel(model)}.`;
 }
 
 export interface FormatSessionsTextOptions {

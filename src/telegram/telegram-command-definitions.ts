@@ -19,6 +19,7 @@ const TELEGRAM_COMMAND_DEFINITIONS: readonly TelegramCommandDefinition[] = [
 		helpUsage: "switch <session-id-prefix-or-id>",
 	},
 	{ command: "current", description: "Show the selected session" },
+	{ command: "model", description: "Choose the current session model" },
 	{ command: "abort", description: "Abort the active run" },
 ];
 

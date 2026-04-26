@@ -348,6 +348,14 @@ class MockPiSession implements PiSessionPort {
 		};
 	}
 
+	async listAvailableModels(): Promise<PiModelDescriptor[]> {
+		return [];
+	}
+
+	async setActiveModel(_model: PiModelDescriptor): Promise<void> {
+		throw new Error("Unexpected setActiveModel call in progress test.");
+	}
+
 	setSessionName(name: string): void {
 		this.sessionName = name;
 		this.modified = new Date();

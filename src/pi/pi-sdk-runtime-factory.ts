@@ -12,6 +12,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { DEFAULT_TITLE_REFINEMENT_MODEL } from "../config/title-refinement-model.js";
+import { ModelNotAvailableError } from "./pi-errors.js";
 import type {
 	PiModelDescriptor,
 	PiRuntimeFactory,
@@ -375,6 +376,25 @@ class PiSdkSessionAdapter implements PiSessionPort {
 		return this.session.subscribe((event: AgentSessionEvent) => {
 			listener(event as PiSessionEvent);
 		});
+	}
+
+	async listAvailableModels(): Promise<PiModelDescriptor[]> {
+		return this.session.modelRegistry
+			.getAvailable()
+			.filter((model) => this.session.modelRegistry.hasConfiguredAuth(model))
+			.map((model) => ({
+				provider: model.provider,
+				id: model.id,
+			}));
+	}
+
+	async setActiveModel(model: PiModelDescriptor): Promise<void> {
+		const resolvedModel = this.session.modelRegistry.find(model.provider, model.id);
+		if (!resolvedModel || !this.session.modelRegistry.hasConfiguredAuth(resolvedModel)) {
+			throw new ModelNotAvailableError(`${model.provider}/${model.id}`);
+		}
+
+		await this.session.setModel(resolvedModel);
 	}
 
 	setSessionName(name: string): void {

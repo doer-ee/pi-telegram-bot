@@ -14,6 +14,7 @@ import type {
 import {
 	AmbiguousSessionReferenceError,
 	BusySessionError,
+	NoSelectedSessionError,
 	SessionNotFoundError,
 } from "../src/session/session-errors.js";
 import { type ActiveSessionInfo, SessionCoordinator } from "../src/session/session-coordinator.js";
@@ -122,6 +123,25 @@ describe("SessionCoordinator", () => {
 				userPromptCount: undefined,
 			});
 			expect(runtimeFactory.persistedUserPromptCountRequests).toEqual([session.path]);
+		});
+
+		it("#when requesting model selection without a selected session #then it stays empty and rejects model changes clearly", async () => {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+			);
+
+			await coordinator.initialize();
+
+			await expect(coordinator.getCurrentSessionModelSelection()).resolves.toBeUndefined();
+			await expect(
+				coordinator.setCurrentSessionModel({
+					provider: "openai",
+					id: "gpt-5.4",
+				}),
+			).rejects.toBeInstanceOf(NoSelectedSessionError);
 		});
 	});
 
@@ -288,6 +308,40 @@ describe("SessionCoordinator", () => {
 			expect(runtimeFactory.getSession(sessionA.path)?.messages).toEqual(["prompt to A", "second prompt to A"]);
 			expect(runtimeFactory.getSession(sessionB.path)?.messages).toEqual(["prompt to B"]);
 		});
+
+		it("#when querying and changing the current session model #then it uses the runtime-backed available models and updates only the selected session", async () => {
+			const currentModel: PiModelDescriptor = {
+				provider: "openai",
+				id: "gpt-5.4",
+			};
+			const nextModel: PiModelDescriptor = {
+				provider: "anthropic",
+				id: "claude-sonnet-4-5",
+			};
+			const runtimeFactory = new MockPiRuntimeFactory(currentModel, [currentModel, nextModel]);
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+			);
+
+			await coordinator.initialize();
+			const sessionA = await coordinator.createNewSession();
+			await coordinator.createNewSession();
+			await coordinator.switchSession(sessionA.path);
+
+			await expect(coordinator.getCurrentSessionModelSelection()).resolves.toEqual({
+				currentModel,
+				availableModels: [currentModel, nextModel],
+			});
+
+			const updatedSession = await coordinator.setCurrentSessionModel(nextModel);
+
+			expect(updatedSession.path).toBe(sessionA.path);
+			expect(updatedSession.activeModel).toEqual(nextModel);
+			expect((await coordinator.getCurrentSession())?.activeModel).toEqual(nextModel);
+			expect(runtimeFactory.getSession(sessionA.path)?.activeModel).toEqual(nextModel);
+		});
 	});
 
 	describe("#given an active run", () => {
@@ -310,6 +364,12 @@ describe("SessionCoordinator", () => {
 			await expect(coordinator.sendPrompt("second prompt")).rejects.toBeInstanceOf(BusySessionError);
 			await expect(coordinator.createNewSession()).rejects.toBeInstanceOf(BusySessionError);
 			await expect(coordinator.switchSession(sessionB.path)).rejects.toBeInstanceOf(BusySessionError);
+			await expect(
+				coordinator.setCurrentSessionModel({
+					provider: "openai",
+					id: "gpt-5.4",
+				}),
+			).rejects.toBeInstanceOf(BusySessionError);
 
 			const aborted = await coordinator.abortActiveRun();
 			expect(aborted).toBe(true);
@@ -488,7 +548,10 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 	private readonly sessions = new Map<string, MockPiSession>();
 	private nextSessionNumber = 1;
 
-	constructor(private readonly activeModel?: PiModelDescriptor) {}
+	constructor(
+		private readonly initialActiveModel?: PiModelDescriptor,
+		private readonly availableModels: PiModelDescriptor[] = initialActiveModel ? [initialActiveModel] : [],
+	) {}
 
 	readonly refineRequests: Array<{
 		workspacePath: string;
@@ -567,7 +630,8 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 			path,
 			workspacePath,
 			`s${this.nextSessionNumber}-session`,
-			this.activeModel,
+			this.initialActiveModel,
+			this.availableModels,
 		);
 		this.nextSessionNumber += 1;
 		this.sessions.set(path, session);
@@ -614,11 +678,19 @@ class MockPiSession implements PiSessionPort {
 	private queuedPromptEvents: PiSessionEvent[] = [];
 	private pausedPrompt: Deferred<void> | undefined;
 	private streaming = false;
+	private model: PiModelDescriptor | undefined;
 
-	constructor(path: string, cwd: string, sessionId: string, private readonly model?: PiModelDescriptor) {
+	constructor(
+		path: string,
+		cwd: string,
+		sessionId: string,
+		initialModel?: PiModelDescriptor,
+		private readonly availableModels: PiModelDescriptor[] = initialModel ? [initialModel] : [],
+	) {
 		this.sessionFile = path;
 		this.cwd = cwd;
 		this.sessionId = sessionId;
+		this.model = initialModel;
 	}
 
 	get activeModel(): PiModelDescriptor | undefined {
@@ -634,6 +706,22 @@ class MockPiSession implements PiSessionPort {
 		return () => {
 			this.listeners.delete(listener);
 		};
+	}
+
+	async listAvailableModels(): Promise<PiModelDescriptor[]> {
+		return this.availableModels;
+	}
+
+	async setActiveModel(model: PiModelDescriptor): Promise<void> {
+		const isAvailable = this.availableModels.some(
+			(candidate) => candidate.provider === model.provider && candidate.id === model.id,
+		);
+		if (!isAvailable) {
+			throw new Error(`Unavailable model ${model.provider}/${model.id}`);
+		}
+
+		this.model = model;
+		this.modified = new Date();
 	}
 
 	setSessionName(name: string): void {

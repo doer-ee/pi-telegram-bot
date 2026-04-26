@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { PiModelDescriptor } from "../src/pi/pi-types.js";
+import type { CurrentSessionModelSelection, PiModelDescriptor } from "../src/pi/pi-types.js";
 import type { CurrentSessionEntry } from "../src/session/session-coordinator.js";
-import { formatCurrentSessionText, formatNewSessionText } from "../src/telegram/telegram-formatters.js";
+import {
+	formatCurrentSessionText,
+	formatModelSelectionChangedText,
+	formatModelSelectionText,
+	formatNewSessionText,
+	formatNoAvailableModelsText,
+	formatNoSelectedSessionText,
+} from "../src/telegram/telegram-formatters.js";
 
 describe("formatNewSessionText", () => {
 	it("formats the /new reply with timestamp, workspace, and active model", () => {
@@ -85,6 +92,42 @@ describe("formatCurrentSessionText", () => {
 	});
 });
 
+describe("model selection formatters", () => {
+	it("formats the /model picker header with the current model and paging info", () => {
+		const selection = createModelSelection({
+			currentModel: {
+				provider: "openai",
+				id: "gpt-5.4",
+			},
+			availableModels: [
+				{ provider: "openai", id: "gpt-5.4" },
+				{ provider: "anthropic", id: "claude-sonnet-4-5" },
+			],
+		});
+
+		expect(formatModelSelectionText(selection, { pageIndex: 1, pageCount: 3 })).toBe(
+			"Models (page 2/3):\nCurrent: openai/gpt-5.4\n\nTap a button below to switch the current session model.",
+		);
+	});
+
+	it("formats truthful /model empty states and confirmations", () => {
+		const selection = createModelSelection({ currentModel: undefined, availableModels: [] });
+
+		expect(formatNoSelectedSessionText()).toBe(
+			"No session is selected. Use /new, /sessions, or send a freeform message to create one.",
+		);
+		expect(formatNoAvailableModelsText(selection)).toBe(
+			"Models:\nCurrent: unavailable (not reported by Pi runtime)\n\nNo auth-configured models are currently available.",
+		);
+		expect(
+			formatModelSelectionChangedText({
+				provider: "anthropic",
+				id: "claude-sonnet-4-5",
+			}),
+		).toBe("Current session model set to anthropic/claude-sonnet-4-5.");
+	});
+});
+
 function createSession(overrides: {
 	created: Date;
 	cwd: string;
@@ -108,5 +151,12 @@ function createSession(overrides: {
 		allMessagesText: "",
 		isSelected: true,
 		source: "pi",
+	};
+}
+
+function createModelSelection(overrides: Partial<CurrentSessionModelSelection>): CurrentSessionModelSelection {
+	return {
+		currentModel: overrides.currentModel,
+		availableModels: overrides.availableModels ?? [],
 	};
 }

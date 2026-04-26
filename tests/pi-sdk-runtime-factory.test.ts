@@ -48,11 +48,16 @@ vi.mock("../src/pi/session-title-refinement.js", () => ({
 
 import { PiSdkRuntimeFactory } from "../src/pi/pi-sdk-runtime-factory.js";
 
+let currentAvailableModels: Model<Api>[] = [];
+let currentHasConfiguredAuth: (model: Model<Api>) => boolean = () => true;
+
 describe("PiSdkRuntimeFactory", () => {
 	let consoleInfoMock: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		currentAvailableModels = [];
+		currentHasConfiguredAuth = () => true;
 		consoleInfoMock = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
 		const sessionManager = {
@@ -124,6 +129,66 @@ describe("PiSdkRuntimeFactory", () => {
 			provider: "anthropic",
 			id: "claude-sonnet-4-5",
 		});
+	});
+
+	it("#given auth-configured available models #when listing and changing the current session model #then it uses the runtime model registry and AgentSession.setModel", async () => {
+		const currentModel = createModel({ provider: "anthropic", id: "claude-sonnet-4-5" });
+		const nextModel = createModel({ provider: "openai", id: "gpt-5.4" });
+		const unauthenticatedModel = createModel({ provider: "openrouter", id: "gpt-5.4" });
+
+		setAvailableModels([currentModel, nextModel, unauthenticatedModel], {
+			hasConfiguredAuth(model) {
+				return model !== unauthenticatedModel;
+			},
+		});
+
+		const runtimeSession = createRuntimeSession({ model: currentModel });
+		createAgentSessionRuntimeMock.mockImplementation(async (createRuntimeFactory, options) => {
+			await createRuntimeFactory({
+				cwd: options.cwd,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: undefined,
+			});
+
+			return {
+				diagnostics: [],
+				dispose: vi.fn(),
+				newSession: vi.fn(),
+				session: runtimeSession,
+				switchSession: vi.fn(),
+			};
+		});
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+		const runtime = await factory.createRuntime({ workspacePath: "/workspace" });
+
+		await expect(runtime.session.listAvailableModels()).resolves.toEqual([
+			{ provider: "anthropic", id: "claude-sonnet-4-5" },
+			{ provider: "openai", id: "gpt-5.4" },
+		]);
+
+		await runtime.session.setActiveModel({ provider: "openai", id: "gpt-5.4" });
+
+		expect(runtimeSession.setModel).toHaveBeenCalledWith(nextModel);
+		expect(runtime.session.activeModel).toEqual({ provider: "openai", id: "gpt-5.4" });
+	});
+
+	it("#given a model that is missing or no longer auth-configured #when changing the current session model #then it fails clearly", async () => {
+		const currentModel = createModel({ provider: "anthropic", id: "claude-sonnet-4-5" });
+		const unavailableModel = createModel({ provider: "openrouter", id: "gpt-5.4" });
+
+		setAvailableModels([currentModel, unavailableModel], {
+			hasConfiguredAuth(model) {
+				return model !== unavailableModel;
+			},
+		});
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+		const runtime = await factory.createRuntime({ workspacePath: "/workspace" });
+
+		await expect(
+			runtime.session.setActiveModel({ provider: "openrouter", id: "gpt-5.4" }),
+		).rejects.toThrowError("Model not available for this session: openrouter/gpt-5.4");
 	});
 
 	it("#given persisted sessions #when listing sessions #then it leaves the broad SessionManager listing untouched", async () => {
@@ -394,6 +459,9 @@ function setAvailableModels(
 		hasConfiguredAuth?: (model: Model<Api>) => boolean;
 	},
 ): void {
+	currentAvailableModels = availableModels;
+	currentHasConfiguredAuth = overrides?.hasConfiguredAuth ?? (() => true);
+
 	createAgentSessionServicesMock.mockResolvedValue({
 		agentDir: "/agent-dir",
 		cwd: "/workspace",
@@ -406,25 +474,41 @@ function setAvailableModels(
 				return availableModels;
 			},
 			hasConfiguredAuth(model: Model<Api>) {
-				return overrides?.hasConfiguredAuth?.(model) ?? true;
+				return currentHasConfiguredAuth(model);
 			},
 		},
 	});
 }
 
 function createRuntimeSession(overrides?: { model?: Model<Api> | undefined }) {
-	return {
+	const runtimeSession = {
 		abort: vi.fn(),
 		bindExtensions: vi.fn().mockResolvedValue(undefined),
 		isStreaming: false,
+		modelRegistry: {
+			find(provider: string, modelId: string) {
+				return currentAvailableModels.find((model) => model.provider === provider && model.id === modelId);
+			},
+			getAvailable() {
+				return currentAvailableModels.filter((model) => currentHasConfiguredAuth(model));
+			},
+			hasConfiguredAuth(model: Model<Api>) {
+				return currentHasConfiguredAuth(model);
+			},
+		},
 		model: overrides?.model,
 		sendUserMessage: vi.fn(),
 		sessionFile: "/workspace/.pi/sessions/session.jsonl",
 		sessionId: "session-1",
 		sessionName: undefined,
+		setModel: vi.fn(async (model: Model<Api>) => {
+			runtimeSession.model = model;
+		}),
 		setSessionName: vi.fn(),
 		subscribe: vi.fn(() => () => undefined),
 	};
+
+	return runtimeSession;
 }
 
 function createModel(overrides: Pick<Model<Api>, "id" | "provider">): Model<Api> {

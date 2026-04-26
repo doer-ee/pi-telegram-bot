@@ -33,6 +33,11 @@ export interface PiModelDescriptor {
 	id: string;
 }
 
+export interface CurrentSessionModelSelection {
+	currentModel: PiModelDescriptor | undefined;
+	availableModels: PiModelDescriptor[];
+}
+
 export interface PiAssistantMessageEvent {
 	type?: string;
 	delta?: string;
@@ -73,6 +78,8 @@ export interface PiSessionPort {
 	readonly activeModel: PiModelDescriptor | undefined;
 	readonly isStreaming: boolean;
 	subscribe(listener: PiSessionEventListener): () => void;
+	listAvailableModels(): Promise<PiModelDescriptor[]>;
+	setActiveModel(model: PiModelDescriptor): Promise<void>;
 	setSessionName(name: string): void;
 	sendUserMessage(content: string): Promise<void>;
 	abort(): Promise<void>;

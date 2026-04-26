@@ -1,12 +1,25 @@
+import { createHash } from "node:crypto";
 import { Markup, Telegraf, type Context } from "telegraf";
 import type { Update } from "telegraf/types";
 import type { AppConfig } from "../config/app-config.js";
-import { AmbiguousSessionReferenceError, BusySessionError, SessionNotFoundError } from "../session/session-errors.js";
+import { ModelNotAvailableError } from "../pi/pi-errors.js";
+import type { CurrentSessionModelSelection, PiModelDescriptor } from "../pi/pi-types.js";
+import {
+	AmbiguousSessionReferenceError,
+	BusySessionError,
+	NoSelectedSessionError,
+	SelectedModelUnavailableError,
+	SessionNotFoundError,
+} from "../session/session-errors.js";
 import { type SessionCatalogEntry, SessionCoordinator } from "../session/session-coordinator.js";
 import {
 	formatCurrentSessionText,
 	formatHelpText,
+	formatModelSelectionChangedText,
+	formatModelSelectionText,
 	formatNewSessionText,
+	formatNoAvailableModelsText,
+	formatNoSelectedSessionText,
 	formatSelectionChangedText,
 	formatSessionsText,
 	formatStartText,
@@ -47,6 +60,10 @@ export const SESSION_SWITCH_CALLBACK_PREFIX = "switch:";
 export const SESSION_SELECTION_PAGE_CALLBACK_PREFIX = "sessions:page:";
 export const SESSION_SELECTION_CANCEL_CALLBACK_DATA = "sessions:cancel";
 const SESSION_SELECTION_PAGE_SIZE = 5;
+export const MODEL_SELECTION_PAGE_CALLBACK_PREFIX = "models:page:";
+export const MODEL_SELECTION_CANCEL_CALLBACK_DATA = "models:cancel";
+export const MODEL_SWITCH_CALLBACK_PREFIX = "models:select:";
+const MODEL_SELECTION_PAGE_SIZE = 5;
 
 export class TelegramBotApp {
 	private readonly bot: Telegraf<BotContext>;
@@ -142,6 +159,23 @@ export class TelegramBotApp {
 			});
 		});
 
+		this.bot.command("model", async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				const selection = await this.coordinator.getCurrentSessionModelSelection();
+				if (!selection) {
+					await ctx.reply(formatNoSelectedSessionText());
+					return;
+				}
+
+				const popup = buildModelSelectionPopup(selection);
+				if (popup.keyboard) {
+					await ctx.reply(popup.text, popup.keyboard);
+					return;
+				}
+				await ctx.reply(popup.text);
+			});
+		});
+
 		this.bot.command("abort", async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
 				const aborted = await this.coordinator.abortActiveRun();
@@ -182,6 +216,30 @@ export class TelegramBotApp {
 			});
 		});
 
+		this.bot.action(new RegExp(`^${MODEL_SELECTION_PAGE_CALLBACK_PREFIX}(\\d+)$`), async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				const selection = await this.coordinator.getCurrentSessionModelSelection();
+				if (!selection) {
+					throw new NoSelectedSessionError();
+				}
+
+				const pageIndex = parseModelSelectionPageIndex(ctx.match[1]);
+				const popup = buildModelSelectionPopup(selection, pageIndex);
+				if (popup.keyboard) {
+					await ctx.editMessageText(popup.text, popup.keyboard);
+				} else {
+					await ctx.editMessageText(popup.text);
+				}
+				await ctx.answerCbQuery();
+			});
+		});
+
+		this.bot.action(MODEL_SELECTION_CANCEL_CALLBACK_DATA, async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				await dismissSessionSelectionKeyboard(ctx);
+			});
+		});
+
 		this.bot.action(new RegExp(`^${SESSION_SWITCH_CALLBACK_PREFIX}(.+)$`), async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
 				const sessionId = ctx.match[1];
@@ -191,6 +249,36 @@ export class TelegramBotApp {
 				const session = await this.coordinator.switchSessionById(sessionId);
 				await ctx.answerCbQuery("Session selected.");
 				await ctx.reply(formatSelectionChangedText(session));
+			});
+		});
+
+		this.bot.action(new RegExp(`^${MODEL_SWITCH_CALLBACK_PREFIX}(\\d+):([a-f0-9]+)$`), async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				const selection = await this.coordinator.getCurrentSessionModelSelection();
+				if (!selection) {
+					throw new NoSelectedSessionError();
+				}
+
+				const pageIndex = parseModelSelectionPageIndex(ctx.match[1]);
+				const model = resolveModelSelection(selection.availableModels, ctx.match[2]);
+				if (!model) {
+					throw new SelectedModelUnavailableError();
+				}
+
+				const session = await this.coordinator.setCurrentSessionModel(model);
+				const updatedSelection: CurrentSessionModelSelection = {
+					currentModel: session.activeModel,
+					availableModels: (await this.coordinator.getCurrentSessionModelSelection())?.availableModels ??
+						selection.availableModels,
+				};
+				const popup = buildModelSelectionPopup(updatedSelection, pageIndex);
+				if (popup.keyboard) {
+					await ctx.editMessageText(popup.text, popup.keyboard);
+				} else {
+					await ctx.editMessageText(popup.text);
+				}
+				await ctx.answerCbQuery("Model selected.");
+				await ctx.reply(formatModelSelectionChangedText(model));
 			});
 		});
 
@@ -269,6 +357,29 @@ export function buildSessionKeyboard(sessions: SessionCatalogEntry[], pageIndex 
 	return Markup.inlineKeyboard(rows);
 }
 
+export function buildModelKeyboard(selection: CurrentSessionModelSelection, pageIndex = 0) {
+	if (selection.availableModels.length === 0) {
+		return undefined;
+	}
+
+	const pageCount = getModelSelectionPageCount(selection.availableModels.length);
+	const normalizedPageIndex = normalizeModelSelectionPageIndex(pageIndex, selection.availableModels.length);
+	const pageModels = getModelSelectionPageModels(selection.availableModels, normalizedPageIndex);
+	const rows = pageModels.map((model) => [
+		Markup.button.callback(
+			buildModelButtonLabel(model, selection.currentModel),
+			`${MODEL_SWITCH_CALLBACK_PREFIX}${normalizedPageIndex}:${createModelSelectionToken(model)}`,
+		),
+	]);
+	const navigationRow = buildModelSelectionNavigationRow(normalizedPageIndex, pageCount);
+	if (navigationRow) {
+		rows.push(navigationRow);
+	}
+	rows.push([Markup.button.callback("cancel", MODEL_SELECTION_CANCEL_CALLBACK_DATA)]);
+
+	return Markup.inlineKeyboard(rows);
+}
+
 function buildSessionSelectionPopup(sessions: SessionCatalogEntry[], pageIndex = 0): {
 	text: string;
 	keyboard: ReturnType<typeof buildSessionKeyboard> | undefined;
@@ -290,6 +401,27 @@ function buildSessionSelectionPopup(sessions: SessionCatalogEntry[], pageIndex =
 			pageStartIndex: normalizedPageIndex * SESSION_SELECTION_PAGE_SIZE,
 		}),
 		keyboard: buildSessionKeyboard(sessions, normalizedPageIndex),
+	};
+}
+
+function buildModelSelectionPopup(selection: CurrentSessionModelSelection, pageIndex = 0): {
+	text: string;
+	keyboard: ReturnType<typeof buildModelKeyboard> | undefined;
+} {
+	if (selection.availableModels.length === 0) {
+		return {
+			text: formatNoAvailableModelsText(selection),
+			keyboard: undefined,
+		};
+	}
+
+	const normalizedPageIndex = normalizeModelSelectionPageIndex(pageIndex, selection.availableModels.length);
+	return {
+		text: formatModelSelectionText(selection, {
+			pageIndex: normalizedPageIndex,
+			pageCount: getModelSelectionPageCount(selection.availableModels.length),
+		}),
+		keyboard: buildModelKeyboard(selection, normalizedPageIndex),
 	};
 }
 
@@ -337,7 +469,49 @@ function buildSessionSelectionNavigationRow(pageIndex: number, pageCount: number
 	return buttons.length > 0 ? buttons : undefined;
 }
 
+function getModelSelectionPageModels(models: readonly PiModelDescriptor[], pageIndex: number): PiModelDescriptor[] {
+	const startIndex = pageIndex * MODEL_SELECTION_PAGE_SIZE;
+	return models.slice(startIndex, startIndex + MODEL_SELECTION_PAGE_SIZE);
+}
+
+function getModelSelectionPageCount(modelCount: number): number {
+	return Math.max(1, Math.ceil(modelCount / MODEL_SELECTION_PAGE_SIZE));
+}
+
+function normalizeModelSelectionPageIndex(pageIndex: number, modelCount: number): number {
+	if (!Number.isFinite(pageIndex) || pageIndex <= 0) {
+		return 0;
+	}
+
+	return Math.min(Math.trunc(pageIndex), getModelSelectionPageCount(modelCount) - 1);
+}
+
+function buildModelSelectionNavigationRow(pageIndex: number, pageCount: number) {
+	if (pageCount <= 1) {
+		return undefined;
+	}
+
+	const buttons = [];
+	if (pageIndex > 0) {
+		buttons.push(Markup.button.callback("Last page", `${MODEL_SELECTION_PAGE_CALLBACK_PREFIX}${pageIndex - 1}`));
+	}
+	if (pageIndex < pageCount - 1) {
+		buttons.push(Markup.button.callback("Next page", `${MODEL_SELECTION_PAGE_CALLBACK_PREFIX}${pageIndex + 1}`));
+	}
+
+	return buttons.length > 0 ? buttons : undefined;
+}
+
 function parseSessionSelectionPageIndex(value: string | undefined): number {
+	if (!value) {
+		return 0;
+	}
+
+	const pageIndex = Number.parseInt(value, 10);
+	return Number.isNaN(pageIndex) ? 0 : pageIndex;
+}
+
+function parseModelSelectionPageIndex(value: string | undefined): number {
 	if (!value) {
 		return 0;
 	}
@@ -359,8 +533,40 @@ function buildSessionButtonLabel(session: SessionCatalogEntry): string {
 	return `${prefix}: ${name}`.slice(0, 60);
 }
 
+function buildModelButtonLabel(model: PiModelDescriptor, currentModel: PiModelDescriptor | undefined): string {
+	const label = formatModelIdentifier(model);
+	if (isSameModel(model, currentModel)) {
+		return `current: ${label}`.slice(0, 60);
+	}
+
+	return label.slice(0, 60);
+}
+
+function createModelSelectionToken(model: PiModelDescriptor): string {
+	return createHash("sha256").update(formatModelIdentifier(model)).digest("hex").slice(0, 12);
+}
+
+function resolveModelSelection(
+	models: readonly PiModelDescriptor[],
+	selectionToken: string | undefined,
+): PiModelDescriptor | undefined {
+	if (!selectionToken) {
+		return undefined;
+	}
+
+	return models.find((model) => createModelSelectionToken(model) === selectionToken);
+}
+
+function formatModelIdentifier(model: PiModelDescriptor): string {
+	return `${model.provider}/${model.id}`;
+}
+
+function isSameModel(left: PiModelDescriptor, right: PiModelDescriptor | undefined): boolean {
+	return right !== undefined && left.provider === right.provider && left.id === right.id;
+}
+
 function isCallbackContext(ctx: BotContext): boolean {
-	return "callbackQuery" in ctx.update;
+	return "callback_query" in ctx.update;
 }
 
 export function shouldRejectUnauthorizedPrivateUpdate(update: Update, authorizedTelegramUserId: number): boolean {
@@ -413,6 +619,9 @@ function getPrivateCallbackQuerySenderId(callbackQuery: CallbackQueryUpdate["cal
 function formatUserFacingError(error: unknown): string {
 	if (
 		error instanceof BusySessionError ||
+		error instanceof ModelNotAvailableError ||
+		error instanceof NoSelectedSessionError ||
+		error instanceof SelectedModelUnavailableError ||
 		error instanceof SessionNotFoundError ||
 		error instanceof AmbiguousSessionReferenceError
 	) {
