@@ -24,6 +24,7 @@ It is not currently a multi-user bot, a group-chat bot, or a general remote host
 - runs Pi locally with no separate web service
 - restricts access to one Telegram user ID
 - keeps one selected session active and persists that selection across restarts
+- lets you change the current session's active conversation model with `/model`
 - supports `/new`, `/sessions`, `/switch`, `/current`, `/status`, and `/abort`
 - registers the Telegram command menu on startup
 - streams replies back into Telegram and falls back to plain text if Markdown formatting is rejected
@@ -125,7 +126,7 @@ Important: do not set `PI_TELEGRAM_BOT_ENV_PATH` inside `.env`. That value has t
 | `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token from BotFather. | Startup fails if missing. |
 | `TELEGRAM_AUTHORIZED_USER_ID` | Yes | Numeric Telegram user ID allowed to use the bot. | Must be a positive integer. |
 | `PI_WORKSPACE_PATH` | Yes | Workspace controlled by the bot. | Must point to an existing directory. |
-| `BOT_STATE_PATH` | No | Local JSON file for selected-session and pin metadata. | Defaults to `./data/state.json`. |
+| `BOT_STATE_PATH` | No | Local JSON file for selected-session, pin, and model-recency metadata. | Defaults to `./data/state.json`. |
 | `PI_AGENT_DIR` | No | Optional Pi agent directory override. | Leave blank to use the Pi SDK default for this machine. |
 | `PI_SESSION_TITLE_REFINEMENT_MODEL` | No | Background-only model for session-title refinement. | Defaults to `openai/gpt-5.4-mini`; provider-qualified values are recommended. |
 | `TELEGRAM_STREAM_THROTTLE_MS` | No | Minimum delay between streamed reply updates. | Default `1000`, minimum `250`. |
@@ -146,6 +147,7 @@ Available commands:
 - `/sessions`
 - `/switch <session-id-prefix-or-id>`
 - `/current`
+- `/model`
 - `/abort`
 
 Behavior notes:
@@ -154,7 +156,10 @@ Behavior notes:
 - if no session is selected yet, the first freeform text message creates one automatically
 - `/sessions` shows recent sessions and inline buttons for switching
 - `/switch` also supports a unique session ID prefix
-- while a run is active, new prompts, `/new`, and session switches are rejected until the run finishes or you use `/abort`
+- `/model` opens an inline picker for actually available models for the current session's active conversation model
+- `/model` shows recently used models first for the current workspace
+- `/model` does not change the separate background title-refinement model
+- while a run is active, new prompts, `/new`, session switches, and model changes are rejected until the run finishes or you use `/abort`
 - non-text Telegram attachments are not sent to Pi in this MVP
 
 ## Local-only files and repo hygiene
