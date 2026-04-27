@@ -121,6 +121,7 @@ export class SessionCoordinator {
 		const activeModel = this.runtime?.session.activeModel;
 		const catalog: SessionCatalogEntry[] = sessions.map((session) => ({
 			...session,
+			cwd: this.workspacePath,
 			activeModel: session.path === activeSessionPath ? activeModel : undefined,
 			isSelected: session.path === selectedPath,
 			source: "pi" as const,

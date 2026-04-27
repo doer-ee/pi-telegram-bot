@@ -687,6 +687,44 @@ describe("SessionCoordinator", () => {
 				"after restart B",
 			]);
 		});
+
+		it("#when a restored session listing still reports a stale cwd #then current and new-session workspace reporting stays anchored to the configured workspace", async () => {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const stateStore = new FileAppStateStore(statePath);
+			const firstCoordinator = new SessionCoordinator(workspacePath, stateStore, runtimeFactory);
+
+			await firstCoordinator.initialize();
+			const restoredSession = await firstCoordinator.createNewSession();
+			await firstCoordinator.sendPrompt("before restart");
+			await firstCoordinator.dispose();
+
+			runtimeFactory.listSessionsHandler = async () => {
+				const session = runtimeFactory.getSession(restoredSession.path);
+				if (!session) {
+					return [];
+				}
+
+				return [
+					{
+						...session.toSessionInfo(),
+						cwd: "/Users/jacobhere/Documents/pi-telegram-bot",
+					},
+				];
+			};
+
+			const secondCoordinator = new SessionCoordinator(workspacePath, stateStore, runtimeFactory);
+			await secondCoordinator.initialize();
+
+			await expect(secondCoordinator.getCurrentSession()).resolves.toMatchObject({
+				path: restoredSession.path,
+				cwd: workspacePath,
+				source: "pi",
+			});
+
+			const newSession = await secondCoordinator.createNewSession();
+
+			expect(newSession.cwd).toBe(workspacePath);
+		});
 	});
 
 	describe("#given explicit session references", () => {
@@ -745,6 +783,9 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 		timeoutMs: number;
 	}> = [];
 	readonly persistedUserPromptCountRequests: string[] = [];
+	listSessionsHandler:
+		| ((workspacePath: string, sessions: readonly MockPiSession[]) => Promise<SessionInfoRecord[]>)
+		| undefined;
 	refineSessionTitleHandler: ((request: {
 		workspacePath: string;
 		prompt: string;
@@ -760,6 +801,10 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 	}
 
 	async listSessions(workspacePath: string): Promise<SessionInfoRecord[]> {
+		if (this.listSessionsHandler) {
+			return this.listSessionsHandler(workspacePath, Array.from(this.sessions.values()));
+		}
+
 		return Array.from(this.sessions.values())
 			.filter((session) => session.cwd === workspacePath)
 			.map((session) => session.toSessionInfo())
