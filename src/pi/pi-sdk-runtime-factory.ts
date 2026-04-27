@@ -41,7 +41,7 @@ export class PiSdkRuntimeFactory implements PiRuntimeFactory {
 
 	async createRuntime(options: { workspacePath: string; selectedSessionPath?: string }): Promise<PiRuntimePort> {
 		const sessionManager = options.selectedSessionPath
-			? SessionManager.open(options.selectedSessionPath)
+			? SessionManager.open(options.selectedSessionPath, undefined, options.workspacePath)
 			: SessionManager.create(options.workspacePath);
 
 		const createRuntimeFactory: CreateAgentSessionRuntimeFactory = async ({
@@ -67,7 +67,7 @@ export class PiSdkRuntimeFactory implements PiRuntimeFactory {
 		};
 
 		const runtime = await createAgentSessionRuntime(createRuntimeFactory, {
-			cwd: sessionManager.getCwd(),
+			cwd: options.workspacePath,
 			agentDir: this.agentDir,
 			sessionManager,
 		});
@@ -75,7 +75,7 @@ export class PiSdkRuntimeFactory implements PiRuntimeFactory {
 		await runtime.session.bindExtensions({});
 		throwOnDiagnosticErrors(runtime.diagnostics);
 		logDiagnosticWarnings(runtime.diagnostics);
-		return new PiSdkRuntimeAdapter(runtime);
+		return new PiSdkRuntimeAdapter(runtime, options.workspacePath);
 	}
 
 	async listSessions(workspacePath: string): Promise<SessionInfoRecord[]> {
@@ -316,7 +316,10 @@ class TitleRefinementUnavailableError extends Error {
 }
 
 class PiSdkRuntimeAdapter implements PiRuntimePort {
-	constructor(private readonly runtime: AgentSessionRuntime) {}
+	constructor(
+		private readonly runtime: AgentSessionRuntime,
+		private readonly workspacePath: string,
+	) {}
 
 	get session(): PiSessionPort {
 		return new PiSdkSessionAdapter(this.runtime.session);
@@ -330,7 +333,9 @@ class PiSdkRuntimeAdapter implements PiRuntimePort {
 	}
 
 	async switchSession(sessionPath: string): Promise<void> {
-		const result = await this.runtime.switchSession(sessionPath);
+		const result = await this.runtime.switchSession(sessionPath, {
+			cwdOverride: this.workspacePath,
+		});
 		if (result.cancelled) {
 			throw new Error(`Pi session switch was cancelled unexpectedly for ${sessionPath}.`);
 		}

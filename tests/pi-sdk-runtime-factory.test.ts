@@ -60,14 +60,18 @@ describe("PiSdkRuntimeFactory", () => {
 		currentHasConfiguredAuth = () => true;
 		consoleInfoMock = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
-		const sessionManager = {
-			getCwd: () => "/workspace",
-		};
-		sessionManagerCreateMock.mockReturnValue(sessionManager);
-		sessionManagerOpenMock.mockReturnValue(sessionManager);
+		sessionManagerCreateMock.mockImplementation((cwd: string) => ({
+			getCwd: () => cwd,
+		}));
+		sessionManagerOpenMock.mockImplementation(
+			(_path: string, _sessionDir?: string, cwdOverride?: string) => ({
+				getCwd: () => cwdOverride ?? "/workspace",
+			}),
+		);
 		sessionManagerInMemoryMock.mockReturnValue({ kind: "in-memory-session-manager" });
 		sessionManagerListMock.mockResolvedValue([]);
 		readFileMock.mockResolvedValue("");
+		setAvailableModels([]);
 
 		const runtimeSession = createRuntimeSession();
 		createAgentSessionRuntimeMock.mockImplementation(async (createRuntimeFactory, options) => {
@@ -80,9 +84,9 @@ describe("PiSdkRuntimeFactory", () => {
 			return {
 				diagnostics: [],
 				dispose: vi.fn(),
-				newSession: vi.fn(),
+				newSession: vi.fn().mockResolvedValue({ cancelled: false }),
 				session: runtimeSession,
-				switchSession: vi.fn(),
+				switchSession: vi.fn().mockResolvedValue({ cancelled: false }),
 			};
 		});
 
@@ -99,6 +103,94 @@ describe("PiSdkRuntimeFactory", () => {
 
 	afterEach(() => {
 		consoleInfoMock.mockRestore();
+	});
+
+	it("#given a restored selected session with a stale header cwd #when creating the runtime #then it reapplies the configured workspace path", async () => {
+		sessionManagerOpenMock.mockImplementation(
+			(path: string, _sessionDir?: string, cwdOverride?: string) => ({
+				getCwd: () => cwdOverride ?? `/stale-for-${path}`,
+			}),
+		);
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+
+		await factory.createRuntime({
+			workspacePath: "/workspace",
+			selectedSessionPath: "/stale/session.jsonl",
+		});
+
+		expect(sessionManagerOpenMock).toHaveBeenCalledWith(
+			"/stale/session.jsonl",
+			undefined,
+			"/workspace",
+		);
+		expect(createAgentSessionRuntimeMock).toHaveBeenCalledWith(
+			expect.any(Function),
+			expect.objectContaining({
+				cwd: "/workspace",
+			}),
+		);
+	});
+
+	it("#given a runtime restored from a stale-cwd session #when a later new session uses that runtime #then it stays anchored to the configured workspace", async () => {
+		let observedRuntimeCwd: string | undefined;
+		createAgentSessionRuntimeMock.mockImplementation(async (createRuntimeFactory, options) => {
+			await createRuntimeFactory({
+				cwd: options.cwd,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: undefined,
+			});
+
+			return {
+				diagnostics: [],
+				dispose: vi.fn(),
+				newSession: vi.fn(async () => {
+					observedRuntimeCwd = options.sessionManager.getCwd();
+					return { cancelled: false };
+				}),
+				session: createRuntimeSession(),
+				switchSession: vi.fn().mockResolvedValue({ cancelled: false }),
+			};
+		});
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+		const runtime = await factory.createRuntime({
+			workspacePath: "/workspace",
+			selectedSessionPath: "/stale/session.jsonl",
+		});
+
+		await runtime.newSession();
+
+		expect(observedRuntimeCwd).toBe("/workspace");
+	});
+
+	it("#given an already-running runtime #when switching sessions #then it keeps the configured workspace override", async () => {
+		const switchSessionMock = vi.fn().mockResolvedValue({ cancelled: false });
+		createAgentSessionRuntimeMock.mockImplementation(async (createRuntimeFactory, options) => {
+			await createRuntimeFactory({
+				cwd: options.cwd,
+				sessionManager: options.sessionManager,
+				sessionStartEvent: undefined,
+			});
+
+			return {
+				diagnostics: [],
+				dispose: vi.fn(),
+				newSession: vi.fn().mockResolvedValue({ cancelled: false }),
+				session: createRuntimeSession(),
+				switchSession: switchSessionMock,
+			};
+		});
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+		const runtime = await factory.createRuntime({ workspacePath: "/workspace" });
+
+		await runtime.switchSession("/workspace/.pi/sessions/other-session.jsonl");
+
+		expect(switchSessionMock).toHaveBeenCalledWith(
+			"/workspace/.pi/sessions/other-session.jsonl",
+			{ cwdOverride: "/workspace" },
+		);
 	});
 
 	it("#given a runtime session with an active conversation model #when creating the runtime #then the session adapter exposes that actual model", async () => {
