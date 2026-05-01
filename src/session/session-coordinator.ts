@@ -456,6 +456,17 @@ export class SessionCoordinator {
 				}
 			});
 
+			if (request.target.type === "new_session") {
+				const initialTitle = generateHeuristicSessionTitle(request.prompt);
+				runtime.session.setSessionName(initialTitle);
+				logHeuristicSessionTitle(initialTitle);
+				this.scheduleSessionTitleRefinement({
+					sessionPath,
+					prompt: request.prompt,
+					heuristicTitle: initialTitle,
+				});
+			}
+
 			await runtime.session.sendUserMessage(request.prompt);
 			if (!finalDelivered && lastAssistantText.length === 0) {
 				lastAssistantText = "";

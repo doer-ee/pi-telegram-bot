@@ -773,7 +773,63 @@ describe("SessionCoordinator", () => {
 });
 
 describe("scheduled prompts", () => {
-		it("run in isolated Pi runtimes so the selected foreground session stays unchanged", async () => {
+	it("run scheduled new-session prompts through the same naming flow without changing the selected foreground session", async () => {
+		const localTempDir = await mkdtemp(join(tmpdir(), "pi-telegram-bot-scheduler-"));
+		const localWorkspacePath = join(localTempDir, "workspace");
+		const localStatePath = join(localTempDir, "state.json");
+		await mkdir(localWorkspacePath, { recursive: true });
+		try {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const foregroundRefinement = createDeferred<string | undefined>();
+			const scheduledRefinement = createDeferred<string | undefined>();
+			let refinementRequestCount = 0;
+			runtimeFactory.refineSessionTitleHandler = async () => {
+				refinementRequestCount += 1;
+				return refinementRequestCount === 1 ? foregroundRefinement.promise : scheduledRefinement.promise;
+			};
+			const coordinator = new SessionCoordinator(
+				localWorkspacePath,
+				new FileAppStateStore(localStatePath),
+				runtimeFactory,
+				{ titleRefinementTimeoutMs: 250 },
+			);
+
+			await coordinator.initialize();
+			const selectedSession = await coordinator.createNewSession();
+			await coordinator.sendPrompt("foreground prompt");
+			const scheduledPrompt =
+				"Please help me investigate session naming regressions in scheduled automation flows";
+			const newSessionResult = await coordinator.runScheduledPrompt({
+				prompt: scheduledPrompt,
+				target: { type: "new_session" },
+			});
+
+			expect((await coordinator.getCurrentSession())?.path).toBe(selectedSession.path);
+			expect(newSessionResult.sessionPath).not.toBe(selectedSession.path);
+			expect(newSessionResult.sessionName).toBe("Investigate session naming regressions in...");
+			expect(runtimeFactory.getSession(newSessionResult.sessionPath)?.sessionNameUpdates).toEqual([
+				"Investigate session naming regressions in...",
+			]);
+			expect(runtimeFactory.getSession(newSessionResult.sessionPath)?.messages).toEqual([scheduledPrompt]);
+			expect(runtimeFactory.refineRequests).toHaveLength(2);
+			expect(runtimeFactory.refineRequests[1]).toMatchObject({
+				prompt: scheduledPrompt,
+				heuristicTitle: "Investigate session naming regressions in...",
+				timeoutMs: 250,
+			});
+
+			foregroundRefinement.resolve(undefined);
+			scheduledRefinement.resolve("Scheduled naming regressions");
+			await flushAsyncWork();
+			await flushAsyncWork();
+
+			expect(runtimeFactory.getSession(newSessionResult.sessionPath)?.sessionName).toBe("Scheduled naming regressions");
+		} finally {
+			await rm(localTempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("do not auto-rename scheduled existing-session prompts", async () => {
 		const localTempDir = await mkdtemp(join(tmpdir(), "pi-telegram-bot-scheduler-"));
 		const localWorkspacePath = join(localTempDir, "workspace");
 		const localStatePath = join(localTempDir, "state.json");
@@ -787,34 +843,31 @@ describe("scheduled prompts", () => {
 			);
 
 			await coordinator.initialize();
-			const selectedSession = await coordinator.createNewSession();
-			await coordinator.sendPrompt("foreground prompt");
+			await coordinator.createNewSession();
 			const existingTarget = await coordinator.createNewSession();
 			await coordinator.sendPrompt("existing target prompt");
-			await coordinator.switchSession(selectedSession.path);
+			const existingName = runtimeFactory.getSession(existingTarget.path)?.sessionName;
 
-			const newSessionResult = await coordinator.runScheduledPrompt({
-				prompt: "scheduled fresh prompt",
-				target: { type: "new_session" },
-			});
 			const existingSessionResult = await coordinator.runScheduledPrompt({
 				prompt: "scheduled existing prompt",
 				target: {
 					type: "existing_session",
 					sessionPath: existingTarget.path,
 					sessionId: existingTarget.id,
-					sessionName: existingTarget.name,
+					sessionName: existingName,
 				},
 			});
 
-			expect((await coordinator.getCurrentSession())?.path).toBe(selectedSession.path);
-			expect(newSessionResult.sessionPath).not.toBe(selectedSession.path);
-			expect(runtimeFactory.getSession(newSessionResult.sessionPath)?.messages).toEqual(["scheduled fresh prompt"]);
+			expect(existingSessionResult.sessionPath).toBe(existingTarget.path);
+			expect(existingSessionResult.sessionName).toBe(existingName);
+			expect(runtimeFactory.getSession(existingTarget.path)?.sessionNameUpdates).toEqual([
+				"Existing target prompt",
+			]);
 			expect(runtimeFactory.getSession(existingTarget.path)?.messages).toEqual([
 				"existing target prompt",
 				"scheduled existing prompt",
 			]);
-			expect(existingSessionResult.sessionPath).toBe(existingTarget.path);
+			expect(runtimeFactory.refineRequests).toHaveLength(1);
 		} finally {
 			await rm(localTempDir, { recursive: true, force: true });
 		}
