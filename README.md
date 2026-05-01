@@ -2,9 +2,7 @@
 
 ![CI](https://github.com/doer-ee/pi-telegram-bot/actions/workflows/ci.yml/badge.svg)
 
-A private Telegram control surface for people who already use Pi locally and want to run coding sessions remotely from their phone.
-
-It solves a simple problem: when you're away from your keyboard, you can still start sessions, send prompts, switch sessions, and check status without exposing your machine through a public web app.
+A private Telegram control surface for people who already use Pi locally and want both live remote prompting and scheduled automation from their phone. It is designed as a lightweight OpenClaw-like system for a single user and a single workspace: you can create and switch Pi sessions, send prompts, monitor progress, and schedule one-time or recurring runs without exposing your machine through a public web app.
 
 Telegram works well here because it's fast on mobile, has reliable push notifications, and gives you a familiar command/chat UX from anywhere.
 
@@ -31,11 +29,13 @@ Telegram works well here because it's fast on mobile, has reliable push notifica
 - restricts access to one Telegram user ID
 - keeps one selected session active and persists that selection across restarts
 - lets you change the current session's active conversation model with `/model`
-- supports `/new`, `/sessions`, `/switch`, `/current`, `/status`, and `/abort`
+- supports `/new`, `/sessions`, `/switch`, `/current`, `/rename`, `/status`, and `/abort`
+- supports interactive scheduling with `/schedule`, `/schedules`, `/unschedule`, and `/runscheduled`
 - registers the Telegram command menu on startup
 - streams replies back into Telegram and falls back to plain text if Markdown formatting is rejected
 - keeps a pinned `Active session:` message in sync when the active session has a title
 - creates a quick heuristic title for new sessions, then optionally refines it in the background
+- uses server-local timezone scheduling with one-time and recurring runs plus automatic 1-minute retry while foreground work is busy
 
 ## Quick start (60 seconds)
 
@@ -185,8 +185,13 @@ Available commands:
 - `/sessions`
 - `/switch <session-id-prefix-or-id>`
 - `/current`
+- `/rename`
 - `/model`
 - `/abort`
+- `/schedule`
+- `/schedules`
+- `/unschedule`
+- `/runscheduled`
 
 Behavior notes:
 
@@ -198,7 +203,58 @@ Behavior notes:
 - `/model` shows recently used models first for the current workspace
 - `/model` does not change the separate background title-refinement model
 - while a run is active, new prompts, `/new`, session switches, and model changes are rejected until the run finishes or you use `/abort`
+- `/rename` opens a cancelable rename prompt for the selected session
 - non-text Telegram attachments are not sent to Pi in this MVP
+
+## Scheduled tasks
+
+The bot includes a built-in interactive scheduler so you can queue work for later or create recurring automation without relying on OS cron. This is intended to make the bot a lightweight OpenClaw-like system for a single local Pi workspace.
+
+Scheduler commands:
+
+- `/schedule` — start the interactive schedule flow
+- `/schedules` — list current scheduled tasks
+- `/unschedule` — open an interactive menu to delete a scheduled task
+- `/runscheduled` — open an interactive menu to run a scheduled task now
+
+`/schedule` is a guided flow:
+
+1. choose where the scheduled prompt should run:
+   - new session
+   - current session
+2. answer `When should this run?`
+3. confirm the normalized interpretation
+4. provide the prompt text
+
+Every step includes a cancel path.
+
+Supported schedule examples include:
+
+- `in 10 minutes`
+- `tomorrow at 5am`
+- `2026-05-01 8:30pm`
+- `every tuesday at 8pm`
+- `every 5 minutes`
+- `every hour`
+- `every month`
+
+Important scheduler behavior:
+
+- all schedule parsing and display uses the **server local timezone** of the machine running the bot
+- recurring schedules support minute, hour, day, week, and month intervals
+- scheduled runs send **concise summary results**, not live streamed progress messages
+- if a foreground Pi run is active when a scheduled task becomes due, the task is delayed by **1 minute** and retried until the bot is idle
+- overdue one-time tasks run once after restart
+- if you choose current session during scheduling, that session is frozen into the task at creation time
+
+`/unschedule` and `/runscheduled` both use interactive paginated menus:
+
+- 5 tasks per page
+- first page shows only `Next page`
+- last page shows only `Last page`
+- middle pages show both
+- selection must be confirmed before delete/run
+- every menu includes a cancel button
 
 ## Demo
 
