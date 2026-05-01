@@ -1,8 +1,9 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { readFileMock } = vi.hoisted(() => ({
+const { readFileMock, rmMock } = vi.hoisted(() => ({
 	readFileMock: vi.fn(),
+	rmMock: vi.fn(),
 }));
 
 const {
@@ -27,6 +28,7 @@ const {
 
 vi.mock("node:fs/promises", () => ({
 	readFile: readFileMock,
+	rm: rmMock,
 }));
 
 vi.mock("@mariozechner/pi-coding-agent", () => ({
@@ -283,8 +285,7 @@ describe("PiSdkRuntimeFactory", () => {
 		).rejects.toThrowError("Model not available for this session: openrouter/gpt-5.4");
 	});
 
-	it("#given persisted sessions #when listing sessions #then it leaves the broad SessionManager listing untouched", async () => {
-		sessionManagerListMock.mockResolvedValue([
+	it("#given persisted sessions #when listing sessions #then it leaves the broad SessionManager listing untouched", async () => { sessionManagerListMock.mockResolvedValue([
 			{
 				path: "/workspace/.pi/sessions/session.jsonl",
 				id: "session-1",
@@ -313,7 +314,63 @@ describe("PiSdkRuntimeFactory", () => {
 				allMessagesText: "first user prompt assistant reply follow-up",
 			},
 		]);
-		expect(readFileMock).not.toHaveBeenCalled();
+		expect(readFileMock).not.toHaveBeenCalled(); });
+
+	it("#given workspace-scoped persisted sessions #when clearing all sessions #then it deletes only those session files", async () => {
+		sessionManagerListMock.mockResolvedValue([
+			{
+				path: "/workspace/.pi/sessions/session-a.jsonl",
+				id: "session-a",
+				cwd: "/workspace",
+				name: "Alpha",
+				created: new Date("2026-04-26T14:00:00.000Z"),
+				modified: new Date("2026-04-26T14:05:00.000Z"),
+				messageCount: 1,
+				firstMessage: "first",
+				allMessagesText: "first",
+			},
+			{
+				path: "/workspace/.pi/sessions/session-b.jsonl",
+				id: "session-b",
+				cwd: "/workspace",
+				name: "Beta",
+				created: new Date("2026-04-26T15:00:00.000Z"),
+				modified: new Date("2026-04-26T15:05:00.000Z"),
+				messageCount: 2,
+				firstMessage: "second",
+				allMessagesText: "second",
+			},
+		]);
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+
+		await expect(factory.deleteAllSessions("/workspace")).resolves.toBeUndefined();
+		expect(rmMock).toHaveBeenCalledTimes(2);
+		expect(rmMock).toHaveBeenNthCalledWith(1, "/workspace/.pi/sessions/session-a.jsonl", { force: true });
+		expect(rmMock).toHaveBeenNthCalledWith(2, "/workspace/.pi/sessions/session-b.jsonl", { force: true });
+	});
+
+	it("#given a listed session outside the workspace #when clearing all sessions #then it fails closed before deleting", async () => {
+		sessionManagerListMock.mockResolvedValue([
+			{
+				path: "/other-workspace/.pi/sessions/session-a.jsonl",
+				id: "session-a",
+				cwd: "/other-workspace",
+				name: "Alpha",
+				created: new Date("2026-04-26T14:00:00.000Z"),
+				modified: new Date("2026-04-26T14:05:00.000Z"),
+				messageCount: 1,
+				firstMessage: "first",
+				allMessagesText: "first",
+			},
+		]);
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+
+		await expect(factory.deleteAllSessions("/workspace")).rejects.toThrowError(
+			"Refusing to delete session outside the configured workspace: /other-workspace/.pi/sessions/session-a.jsonl",
+		);
+		expect(rmMock).not.toHaveBeenCalled();
 	});
 
 	it("#given persisted session entries with assistant and user messages #when requesting the selected-session prompt count #then it counts only real persisted user message entries", async () => {

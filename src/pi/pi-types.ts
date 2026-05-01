@@ -101,6 +101,7 @@ export interface BackgroundAssistantPromptRequest {
 export interface PiRuntimeFactory {
 	createRuntime(options: { workspacePath: string; selectedSessionPath?: string }): Promise<PiRuntimePort>;
 	listSessions(workspacePath: string): Promise<SessionInfoRecord[]>;
+	deleteAllSessions?(workspacePath: string): Promise<void>;
 	getPersistedUserPromptCount(sessionPath: string): Promise<number | undefined>;
 	getPersistedLastAssistantReply?(sessionPath: string): Promise<string | undefined>;
 	updateSessionName(sessionPath: string, name: string): Promise<void>;

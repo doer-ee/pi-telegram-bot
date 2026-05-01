@@ -17,6 +17,7 @@ import {
 	formatScheduledTaskRunQueuedText,
 	formatScheduledTaskSelectionText,
 	formatScheduledTasksText,
+	formatSessionsText,
 } from "../src/telegram/telegram-formatters.js";
 
 describe("formatNewSessionText", () => {
@@ -129,8 +130,33 @@ describe("formatRenamePromptText", () => {
 	});
 });
 
-describe("model selection formatters", () => {
-	it("formats the /model picker header with the current model and paging info", () => {
+describe("formatSessionsText", () => {
+	it("formats the compact single-page /sessions popup copy", () => {
+		expect(formatSessionsText([createSession({
+			created: new Date("2026-04-26T14:05:00.000Z"),
+			cwd: "/workspace/project",
+			activeModel: undefined,
+		})])).toBe("Sessions: tap one below");
+	});
+
+	it("formats the compact paginated /sessions popup copy", () => {
+		expect(formatSessionsText([createSession({
+			created: new Date("2026-04-26T14:05:00.000Z"),
+			cwd: "/workspace/project",
+			activeModel: undefined,
+		})], { pageIndex: 1, pageCount: 3 })).toBe(
+			"Sessions (page 2/3): tap one below",
+		);
+	});
+
+	it("keeps the truthful empty state when no sessions exist yet", () => {
+		expect(formatSessionsText([])).toBe(
+			"No Pi sessions found for the configured workspace yet. Use /new or send a freeform message.",
+		);
+	});
+});
+
+describe("model selection formatters", () => { it("formats the /model picker header with the current model and paging info", () => {
 		const selection = createModelSelection({
 			currentModel: {
 				provider: "openai",
@@ -162,8 +188,7 @@ describe("model selection formatters", () => {
 				id: "claude-sonnet-4-5",
 			}),
 		).toBe("Current session model set to anthropic/claude-sonnet-4-5.");
-	});
-});
+	}); });
 
 describe("scheduled task formatters", () => {
 	it("formats creation, listing, deletion, delay, and run-queue messages", () => {

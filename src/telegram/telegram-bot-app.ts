@@ -86,6 +86,8 @@ const INTERACTIVE_MESSAGE_KEYS = [
 export const SESSION_SELECTION_CALLBACK_PREFIX = "sessions:select:";
 export const SESSION_SELECTION_PAGE_CALLBACK_PREFIX = "sessions:page:";
 export const SESSION_SELECTION_CANCEL_CALLBACK_DATA = "sessions:cancel";
+export const SESSION_CLEAR_ALL_CALLBACK_DATA = "sessions:clear-all";
+export const SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA = "sessions:clear-all:confirm";
 const SESSION_SELECTION_PAGE_SIZE = 5;
 export const MODEL_SELECTION_PAGE_CALLBACK_PREFIX = "models:page:";
 export const MODEL_SELECTION_CANCEL_CALLBACK_DATA = "models:cancel";
@@ -426,6 +428,33 @@ this.bot.action(new RegExp(`^${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}(\\d+)$`),
 		this.bot.action(SESSION_SELECTION_CANCEL_CALLBACK_DATA, async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
 				await dismissSessionSelectionKeyboard(ctx);
+			});
+		});
+
+		this.bot.action(SESSION_CLEAR_ALL_CALLBACK_DATA, async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				await ctx.editMessageText(
+					buildClearAllSessionsConfirmationText(),
+					buildClearAllSessionsConfirmationKeyboard(),
+				);
+				await ctx.answerCbQuery("Confirm clear all sessions.");
+			});
+		});
+
+		this.bot.action(SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA, async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				const callbackMessage = ctx.callbackQuery.message;
+				const chatId = callbackMessage?.chat.id;
+				const messageId = callbackMessage?.message_id;
+				if (chatId === undefined || !messageId) {
+					throw new Error("Could not continue the clear-all-sessions flow.");
+				}
+
+				await this.dismissInlineKeyboard(chatId, messageId);
+				const session = await this.coordinator.clearAllSessions();
+				await ctx.answerCbQuery("All sessions cleared.");
+				await ctx.reply("Cleared all persisted Pi sessions for this workspace.");
+				await ctx.reply(formatNewSessionText(session));
 			});
 		});
 
@@ -959,9 +988,25 @@ export function buildSessionKeyboard(sessions: SessionCatalogEntry[], pageIndex 
 	if (navigationRow) {
 		rows.push(navigationRow);
 	}
+	rows.push([Markup.button.callback("Clear all sessions", SESSION_CLEAR_ALL_CALLBACK_DATA)]);
 	rows.push([Markup.button.callback("cancel", SESSION_SELECTION_CANCEL_CALLBACK_DATA)]);
 
 	return Markup.inlineKeyboard(rows);
+}
+
+function buildClearAllSessionsConfirmationKeyboard() {
+	return Markup.inlineKeyboard([
+		[Markup.button.callback("confirm clear all sessions", SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA)],
+		[Markup.button.callback("cancel", SESSION_SELECTION_CANCEL_CALLBACK_DATA)],
+	]);
+}
+
+function buildClearAllSessionsConfirmationText(): string {
+	return [
+		"Clear all sessions for this workspace?",
+		"This deletes all persisted Pi session files for the configured workspace only.",
+		"Tap confirm to continue, or cancel.",
+	].join("\n");
 }
 
 function buildRenameKeyboard() {

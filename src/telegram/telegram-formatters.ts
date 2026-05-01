@@ -106,24 +106,9 @@ export function formatSessionsText(sessions: SessionCatalogEntry[], options?: Fo
 		return "No Pi sessions found for the configured workspace yet. Use /new or send a freeform message.";
 	}
 
-	const title =
-		options?.pageCount && options.pageCount > 1
-			? `Sessions (page ${(options.pageIndex ?? 0) + 1}/${options.pageCount}):`
-			: "Sessions:";
-	const pageStartIndex = options?.pageStartIndex ?? 0;
-	const lines = [title];
-	for (const [index, session] of sessions.entries()) {
-		const marker = session.isSelected ? "*" : " ";
-		const source = session.source === "persisted" ? "pending" : formatDate(session.modified);
-		lines.push(
-			`${marker} ${pageStartIndex + index + 1}. ${session.id.slice(0, 8)} ${session.name ?? basename(session.path)} | ${source}`,
-		);
-		lines.push(`   ${truncate(session.firstMessage, 100)}`);
-	}
-
-	lines.push("");
-	lines.push("Tap a button below to select a session.");
-	return lines.join("\n");
+	return options?.pageCount && options.pageCount > 1
+		? `Sessions (page ${(options.pageIndex ?? 0) + 1}/${options.pageCount}): tap one below`
+		: "Sessions: tap one below";
 }
 
 export function formatSelectionChangedText(session: SessionCatalogEntry): string {

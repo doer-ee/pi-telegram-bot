@@ -240,7 +240,6 @@ export class SessionCoordinator {
 		await this.afterSessionReplacement();
 		return this.requireCurrentSession();
 	}
-
 	async switchSessionById(sessionId: string): Promise<SessionCatalogEntry> {
 		const session = (await this.listSessions()).find((entry) => entry.id === sessionId);
 		if (!session) {
@@ -249,6 +248,22 @@ export class SessionCoordinator {
 		return this.switchSession(session.path);
 	}
 
+	async clearAllSessions(): Promise<SessionCatalogEntry> {
+		this.assertIdle();
+		await this.runtime?.dispose();
+		this.runtime = undefined;
+		if (!this.runtimeFactory.deleteAllSessions) {
+			throw new Error("Pi runtime does not support deleting persisted sessions.");
+		}
+
+		await this.runtimeFactory.deleteAllSessions(this.workspacePath);
+		this.selectedSession = undefined;
+		this.manuallyRenamedSessionPaths.clear();
+		await this.stateStore.clearSelectedSession(this.workspacePath);
+		this.runtime = await this.runtimeFactory.createRuntime({ workspacePath: this.workspacePath });
+		await this.afterSessionReplacement();
+		return this.requireCurrentSession();
+	}
 	async setCurrentSessionModel(model: PiModelDescriptor): Promise<SessionCatalogEntry> {
 		this.assertIdle();
 

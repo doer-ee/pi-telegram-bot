@@ -151,8 +151,7 @@ describe("SessionCoordinator", () => {
 			).rejects.toBeInstanceOf(NoSelectedSessionError);
 		});
 
-		it("#when manually renaming without a selected session or with only whitespace #then it rejects clearly", async () => {
-			const runtimeFactory = new MockPiRuntimeFactory();
+		it("#when manually renaming without a selected session or with only whitespace #then it rejects clearly", async () => { const runtimeFactory = new MockPiRuntimeFactory();
 			const coordinator = new SessionCoordinator(
 				workspacePath,
 				new FileAppStateStore(statePath),
@@ -164,8 +163,35 @@ describe("SessionCoordinator", () => {
 			await expect(coordinator.renameCurrentSession("Selected session name")).rejects.toBeInstanceOf(
 				NoSelectedSessionError,
 			);
-			await expect(coordinator.renameCurrentSession("   ")).rejects.toBeInstanceOf(InvalidSessionNameError);
-		});
+			await expect(coordinator.renameCurrentSession("   ")).rejects.toBeInstanceOf(InvalidSessionNameError); });
+
+		it("#when clearing all sessions #then it deletes only workspace sessions and selects a fresh session", async () => {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+			);
+			const otherWorkspacePath = join(tempDir, "other-workspace");
+			await mkdir(otherWorkspacePath, { recursive: true });
+
+			await coordinator.initialize();
+			const firstSession = await coordinator.createNewSession();
+			await coordinator.sendPrompt("hello from telegram");
+			await runtimeFactory.createRuntime({ workspacePath: otherWorkspacePath });
+
+			const replacementSession = await coordinator.clearAllSessions();
+			const currentSession = await coordinator.getCurrentSession();
+			const workspaceSessions = await coordinator.listSessions();
+			const otherWorkspaceSessions = await runtimeFactory.listSessions(otherWorkspacePath);
+
+			expect(replacementSession.path).not.toBe(firstSession.path);
+			expect(currentSession?.path).toBe(replacementSession.path);
+			expect(workspaceSessions).toHaveLength(1);
+			expect(workspaceSessions[0]?.path).toBe(replacementSession.path);
+			expect(otherWorkspaceSessions).toHaveLength(1);
+			expect(runtimeFactory.getSession(firstSession.path)).toBeUndefined();
+		});;
 	});
 
 	describe("#given a brand new named session", () => {
@@ -971,7 +997,6 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 		const session = this.getOrCreateSession(sessionPath, options.workspacePath);
 		return new MockPiRuntime(this, options.workspacePath, session);
 	}
-
 	async listSessions(workspacePath: string): Promise<SessionInfoRecord[]> {
 		if (this.listSessionsHandler) {
 			return this.listSessionsHandler(workspacePath, Array.from(this.sessions.values()));
@@ -983,6 +1008,13 @@ class MockPiRuntimeFactory implements PiRuntimeFactory {
 			.sort((left, right) => right.modified.getTime() - left.modified.getTime());
 	}
 
+	async deleteAllSessions(workspacePath: string): Promise<void> {
+		for (const [path, session] of this.sessions.entries()) {
+			if (session.cwd === workspacePath) {
+				this.sessions.delete(path);
+			}
+		}
+	}
 	async getPersistedUserPromptCount(sessionPath: string): Promise<number | undefined> {
 		this.persistedUserPromptCountRequests.push(sessionPath);
 		if (this.getPersistedUserPromptCountHandler) {

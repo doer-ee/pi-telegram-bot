@@ -13,6 +13,8 @@ import {
 } from "../src/state/app-state.js";
 import { SessionPinSync } from "../src/telegram/session-pin-sync.js";
 import {
+	SESSION_CLEAR_ALL_CALLBACK_DATA,
+	SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA,
 	SESSION_SELECTION_CALLBACK_PREFIX,
 	SESSION_SELECTION_CANCEL_CALLBACK_DATA,
 	SESSION_SELECTION_PAGE_CALLBACK_PREFIX,
@@ -69,7 +71,7 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 			method: "sendMessage",
 			payload: {
 				chat_id: CHAT_ID,
-				text: expect.stringContaining("Sessions (page 1/2):"),
+				text: "Sessions (page 1/2): tap one below",
 				reply_markup: {
 					inline_keyboard: [
 						[{ text: "current: Alpha", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ALPHA_SESSION.id}`, hide: false }],
@@ -78,7 +80,8 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 						[{ text: "select: Delta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${DELTA_SESSION.id}`, hide: false }],
 						[{ text: "select: Epsilon", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${EPSILON_SESSION.id}`, hide: false }],
 						[{ text: "Next page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}1`, hide: false }],
-						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+						[{ text: "Clear all sessions", callback_data: SESSION_CLEAR_ALL_CALLBACK_DATA, hide: false }],
+[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
 					],
 				},
 			},
@@ -107,7 +110,7 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 			payload: {
 				chat_id: CHAT_ID,
 				message_id: SESSIONS_POPUP_MESSAGE_ID,
-				text: expect.stringContaining("Sessions (page 2/3):"),
+				text: "Sessions (page 2/3): tap one below",
 				reply_markup: {
 					inline_keyboard: [
 						[{ text: "select: Zeta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ZETA_SESSION.id}`, hide: false }],
@@ -119,7 +122,8 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 							{ text: "Last page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}0`, hide: false },
 							{ text: "Next page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}2`, hide: false },
 						],
-						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+						[{ text: "Clear all sessions", callback_data: SESSION_CLEAR_ALL_CALLBACK_DATA, hide: false }],
+[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
 					],
 				},
 			},
@@ -152,13 +156,14 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 			payload: {
 				chat_id: CHAT_ID,
 				message_id: SESSIONS_POPUP_MESSAGE_ID,
-				text: expect.stringContaining("Sessions (page 2/2):"),
+				text: "Sessions (page 2/2): tap one below",
 				reply_markup: {
 					inline_keyboard: [
 						[{ text: "select: Zeta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ZETA_SESSION.id}`, hide: false }],
 						[{ text: "select: Eta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ETA_SESSION.id}`, hide: false }],
 						[{ text: "Last page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}0`, hide: false }],
-						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+						[{ text: "Clear all sessions", callback_data: SESSION_CLEAR_ALL_CALLBACK_DATA, hide: false }],
+[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
 					],
 				},
 			},
@@ -176,13 +181,14 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 			method: "sendMessage",
 			payload: {
 				chat_id: CHAT_ID,
-				text: "Sessions:\n* 1. 11111111 Alpha | 2026-04-24 19:00\n   first message for Alpha\n  2. 22222222 Beta | 2026-04-24 19:00\n   first message for Beta\n  3. 33333333 Gamma | 2026-04-24 19:00\n   first message for Gamma\n\nTap a button below to select a session.",
+				text: "Sessions: tap one below",
 				reply_markup: {
 					inline_keyboard: [
 						[{ text: "current: Alpha", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ALPHA_SESSION.id}`, hide: false }],
 						[{ text: "select: Beta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${BETA_SESSION.id}`, hide: false }],
 						[{ text: "select: Gamma", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${GAMMA_SESSION.id}`, hide: false }],
-						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+						[{ text: "Clear all sessions", callback_data: SESSION_CLEAR_ALL_CALLBACK_DATA, hide: false }],
+[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
 					],
 				},
 			},
@@ -191,8 +197,92 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 		expect(JSON.stringify(harness.apiCalls[0])).not.toContain("Last page");
 	});
 
-	it("dismisses the popup on cancel without switching sessions", async () => {
+	it("opens a confirmation step before clearing all sessions", async () => {
 		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
+
+		await harness.handleUpdate(createSessionsCommandUpdate());
+		harness.apiCalls.length = 0;
+
+		await harness.handleUpdate(
+			createCallbackQueryUpdate({
+				callbackQueryId: "clear-all-callback",
+				data: SESSION_CLEAR_ALL_CALLBACK_DATA,
+			}),
+		);
+
+		expect(harness.coordinator.clearAllSessionsCalls).toBe(0);
+		expect(harness.apiCalls).toEqual([
+			{
+				method: "editMessageText",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: SESSIONS_POPUP_MESSAGE_ID,
+					text: "Clear all sessions for this workspace?\nThis deletes all persisted Pi session files for the configured workspace only.\nTap confirm to continue, or cancel.",
+					reply_markup: {
+						inline_keyboard: [
+							[{ text: "confirm clear all sessions", callback_data: SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA, hide: false }],
+							[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+						],
+					},
+				},
+			},
+			{
+				method: "answerCallbackQuery",
+				payload: {
+					callback_query_id: "clear-all-callback",
+					text: "Confirm clear all sessions.",
+				},
+			},
+		]);
+	});
+
+	it("clears persisted workspace sessions and opens a fresh session after confirmation", async () => {
+		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
+
+		await harness.handleUpdate(
+			createCallbackQueryUpdate({
+				callbackQueryId: "confirm-clear-all-callback",
+				data: SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA,
+			}),
+		);
+
+		expect(harness.coordinator.clearAllSessionsCalls).toBe(1);
+		expect(harness.coordinator.switchSessionByIdCalls).toEqual([]);
+		expect(harness.apiCalls).toEqual([
+			{
+				method: "editMessageReplyMarkup",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: SESSIONS_POPUP_MESSAGE_ID,
+					inline_message_id: undefined,
+					reply_markup: undefined,
+				},
+			},
+			{
+				method: "answerCallbackQuery",
+				payload: {
+					callback_query_id: "confirm-clear-all-callback",
+					text: "All sessions cleared.",
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: expect.objectContaining({
+					chat_id: CHAT_ID,
+					text: "Cleared all persisted Pi sessions for this workspace.",
+				}),
+			},
+			{
+				method: "sendMessage",
+				payload: expect.objectContaining({
+					chat_id: CHAT_ID,
+					text: "New Session - 2026-05-01 10:00\nWorkspace: /workspace\nModel: unavailable (not reported by Pi runtime)",
+				}),
+			},
+		]);
+	});
+
+	it("dismisses the popup on cancel without switching sessions", async () => { const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
 
 		await harness.handleUpdate(createSessionsCommandUpdate());
 		harness.apiCalls.length = 0;
@@ -222,8 +312,7 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 					text: undefined,
 				},
 			},
-		]);
-	});
+		]); });
 
 	it("resends the selected session's persisted assistant reply after switching", async () => {
 		const persistedReply = "# Done\n\n| Col | Val |\n| --- | --- |\n| A | B |";
@@ -490,10 +579,22 @@ function createSession(overrides: Partial<SessionCatalogEntry> & Pick<SessionCat
 class TestSessionCoordinator extends SessionCoordinator {
 	listSessionsCalls = 0;
 	switchSessionByIdCalls: string[] = [];
+	clearAllSessionsCalls = 0;
 
 	constructor(
 		private readonly sessions: SessionCatalogEntry[],
 		private readonly persistedReplies: Record<string, string | undefined>,
+		private readonly freshSession: SessionCatalogEntry = createSession({
+			id: "fresh-session",
+			name: undefined,
+			path: "/workspace/fresh-session.jsonl",
+			created: new Date("2026-05-01T15:00:00.000Z"),
+			modified: new Date("2026-05-01T15:00:00.000Z"),
+			firstMessage: "(awaiting first assistant reply)",
+			messageCount: 0,
+			allMessagesText: "",
+			isSelected: true,
+		}),
 	) {
 		super("/workspace", createAppStateStoreStub(), createUnusedRuntimeFactory());
 	}
@@ -513,6 +614,11 @@ class TestSessionCoordinator extends SessionCoordinator {
 			...session,
 			isSelected: true,
 		};
+	}
+
+	override async clearAllSessions(): Promise<SessionCatalogEntry> {
+		this.clearAllSessionsCalls += 1;
+		return this.freshSession;
 	}
 
 	override async getPersistedLastAssistantReply(sessionPath: string): Promise<string | undefined> {
