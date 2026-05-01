@@ -90,11 +90,6 @@ export function selectRefinedSessionTitle(selection: SessionTitleRefinementSelec
 		return undefined;
 	}
 
-	const heuristicWasTrimmed = selection.heuristicTitle.endsWith("...");
-	if (!heuristicWasTrimmed && candidateTitle.length >= selection.heuristicTitle.length - 4) {
-		return undefined;
-	}
-
 	return candidateTitle;
 }
 

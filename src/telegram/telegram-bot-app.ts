@@ -770,13 +770,14 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 
 	private async runWithErrorHandling(ctx: BotContext, operation: () => Promise<void>): Promise<void> {
 		try {
-			await operation();
-		} catch (error) {
-			if (isCallbackContext(ctx)) {
-				await ctx.answerCbQuery(formatUserFacingError(error));
-			}
-			await ctx.reply(formatUserFacingError(error));
-		}
+	await operation();
+} catch (error) {
+	const userFacingError = formatUserFacingError(error);
+	if (isCallbackContext(ctx)) {
+		await ctx.answerCbQuery(formatCallbackQueryError(userFacingError));
+	}
+	await ctx.reply(userFacingError);
+}
 	}
 }
 
@@ -1270,6 +1271,14 @@ function getPrivateCallbackQuerySenderId(callbackQuery: CallbackQueryUpdate["cal
 	}
 
 	return callbackQuery.from.id;
+}
+
+const CALLBACK_QUERY_ERROR_TEXT_LIMIT = 160;
+
+function formatCallbackQueryError(userFacingError: string): string {
+	return userFacingError.length <= CALLBACK_QUERY_ERROR_TEXT_LIMIT
+		? userFacingError
+		: "Request failed. See chat for details.";
 }
 
 function formatUserFacingError(error: unknown): string {

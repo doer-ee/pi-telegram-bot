@@ -28,6 +28,16 @@ describe("session-title", () => {
 			expect(refinedTitle).toBe("Telegram naming after /new");
 		});
 
+		it("#when the candidate is better but not materially shorter #then it still replaces the heuristic title", () => {
+			const refinedTitle = selectRefinedSessionTitle({
+				prompt: "Please help me figure out whether I need an umbrella this weekend in Chicago and what the temperature swing looks like",
+				heuristicTitle: "Figure out whether I need an umbrella this",
+				candidateTitle: "Chicago weekend weather outlook",
+			});
+
+			expect(refinedTitle).toBe("Chicago weekend weather outlook");
+		});
+
 		it("#when the candidate is generic or weak #then it keeps the heuristic title", () => {
 			const refinedTitle = selectRefinedSessionTitle({
 				prompt:

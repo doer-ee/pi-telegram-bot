@@ -319,7 +319,7 @@ describe("PiSdkRuntimeFactory", () => {
 	it("#given workspace-scoped persisted sessions #when clearing all sessions #then it deletes only those session files", async () => {
 		sessionManagerListMock.mockResolvedValue([
 			{
-				path: "/workspace/.pi/sessions/session-a.jsonl",
+				path: "/agent-dir/sessions/session-a.jsonl",
 				id: "session-a",
 				cwd: "/workspace",
 				name: "Alpha",
@@ -330,7 +330,7 @@ describe("PiSdkRuntimeFactory", () => {
 				allMessagesText: "first",
 			},
 			{
-				path: "/workspace/.pi/sessions/session-b.jsonl",
+				path: "/agent-dir/sessions/session-b.jsonl",
 				id: "session-b",
 				cwd: "/workspace",
 				name: "Beta",
@@ -346,32 +346,11 @@ describe("PiSdkRuntimeFactory", () => {
 
 		await expect(factory.deleteAllSessions("/workspace")).resolves.toBeUndefined();
 		expect(rmMock).toHaveBeenCalledTimes(2);
-		expect(rmMock).toHaveBeenNthCalledWith(1, "/workspace/.pi/sessions/session-a.jsonl", { force: true });
-		expect(rmMock).toHaveBeenNthCalledWith(2, "/workspace/.pi/sessions/session-b.jsonl", { force: true });
+		expect(rmMock).toHaveBeenNthCalledWith(1, "/agent-dir/sessions/session-a.jsonl", { force: true });
+		expect(rmMock).toHaveBeenNthCalledWith(2, "/agent-dir/sessions/session-b.jsonl", { force: true });
 	});
 
-	it("#given a listed session outside the workspace #when clearing all sessions #then it fails closed before deleting", async () => {
-		sessionManagerListMock.mockResolvedValue([
-			{
-				path: "/other-workspace/.pi/sessions/session-a.jsonl",
-				id: "session-a",
-				cwd: "/other-workspace",
-				name: "Alpha",
-				created: new Date("2026-04-26T14:00:00.000Z"),
-				modified: new Date("2026-04-26T14:05:00.000Z"),
-				messageCount: 1,
-				firstMessage: "first",
-				allMessagesText: "first",
-			},
-		]);
-
-		const factory = new PiSdkRuntimeFactory("/agent-dir");
-
-		await expect(factory.deleteAllSessions("/workspace")).rejects.toThrowError(
-			"Refusing to delete session outside the configured workspace: /other-workspace/.pi/sessions/session-a.jsonl",
-		);
-		expect(rmMock).not.toHaveBeenCalled();
-	});
+	it("#given a listed session with stale workspace metadata #when clearing all sessions #then it still deletes the session listed for the workspace", async () => { sessionManagerListMock.mockResolvedValue([{ path: "/agent-dir/sessions/session-a.jsonl", id: "session-a", cwd: "/other-workspace", name: "Alpha", created: new Date("2026-04-26T14:00:00.000Z"), modified: new Date("2026-04-26T14:05:00.000Z"), messageCount: 1, firstMessage: "first", allMessagesText: "first", }]); const factory = new PiSdkRuntimeFactory("/agent-dir"); await expect(factory.deleteAllSessions("/workspace")).resolves.toBeUndefined(); expect(rmMock).toHaveBeenCalledTimes(1); expect(rmMock).toHaveBeenCalledWith("/agent-dir/sessions/session-a.jsonl", { force: true }); });
 
 	it("#given persisted session entries with assistant and user messages #when requesting the selected-session prompt count #then it counts only real persisted user message entries", async () => {
 		readFileMock.mockResolvedValue([

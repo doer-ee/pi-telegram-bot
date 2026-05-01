@@ -365,34 +365,73 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 	});
 
 	it("stays truthful when the selected session has no persisted assistant reply", async () => {
-		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
+	const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
 
-		await harness.handleUpdate(
-			createCallbackQueryUpdate({
-				callbackQueryId: "empty-switch-callback",
-				data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ZETA_SESSION.id}`,
-			}),
-		);
+	await harness.handleUpdate(
+		createCallbackQueryUpdate({
+			callbackQueryId: "empty-switch-callback",
+			data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ZETA_SESSION.id}`,
+		}),
+	);
 
-		expect(harness.apiCalls[harness.apiCalls.length - 1]).toEqual({
+	expect(harness.apiCalls[harness.apiCalls.length - 1]).toEqual({
+		method: "sendMessage",
+		payload: expect.objectContaining({
+			chat_id: CHAT_ID,
+			text: "No persisted assistant reply is available for this session yet.",
+		}),
+	});
+});
+
+it("keeps callback-query errors short when clear-all fails with a long raw error", async () => {
+	const clearAllError = new Error(`Pi deletion failed: ${"shared-session-path ".repeat(20).trim()}`);
+	const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS, {}, clearAllError);
+
+	await harness.handleUpdate(
+		createCallbackQueryUpdate({
+			callbackQueryId: "confirm-clear-all-error-callback",
+			data: SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA,
+		}),
+	);
+
+	expect(harness.apiCalls).toEqual([
+		{
+			method: "editMessageReplyMarkup",
+			payload: {
+				chat_id: CHAT_ID,
+				message_id: SESSIONS_POPUP_MESSAGE_ID,
+				inline_message_id: undefined,
+				reply_markup: undefined,
+			},
+		},
+		{
+			method: "answerCallbackQuery",
+			payload: {
+				callback_query_id: "confirm-clear-all-error-callback",
+				text: "Request failed. See chat for details.",
+			},
+		},
+		{
 			method: "sendMessage",
 			payload: expect.objectContaining({
 				chat_id: CHAT_ID,
-				text: "No persisted assistant reply is available for this session yet.",
+				text: `Request failed: ${clearAllError.message}`,
 			}),
-		});
-	});
+		},
+	]);
+});
 });
 
 function createTelegramBotAppHarness(
 	sessions: SessionCatalogEntry[],
 	persistedReplies: Record<string, string | undefined> = {},
+	clearAllSessionsError?: Error,
 ) {
 	const apiCalls: TelegramApiCall[] = [];
 	restoreTelegramApi?.();
 	restoreTelegramApi = interceptTelegramApi(apiCalls);
 
-	const coordinator = new TestSessionCoordinator(sessions, persistedReplies);
+	const coordinator = new TestSessionCoordinator(sessions, persistedReplies, clearAllSessionsError);
 	const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync());
 	const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
 	Reflect.set(bot, "botInfo", createBotInfo());
@@ -584,6 +623,7 @@ class TestSessionCoordinator extends SessionCoordinator {
 	constructor(
 		private readonly sessions: SessionCatalogEntry[],
 		private readonly persistedReplies: Record<string, string | undefined>,
+		private readonly clearAllSessionsError: Error | undefined,
 		private readonly freshSession: SessionCatalogEntry = createSession({
 			id: "fresh-session",
 			name: undefined,
@@ -618,6 +658,9 @@ class TestSessionCoordinator extends SessionCoordinator {
 
 	override async clearAllSessions(): Promise<SessionCatalogEntry> {
 		this.clearAllSessionsCalls += 1;
+		if (this.clearAllSessionsError) {
+			throw this.clearAllSessionsError;
+		}
 		return this.freshSession;
 	}
 

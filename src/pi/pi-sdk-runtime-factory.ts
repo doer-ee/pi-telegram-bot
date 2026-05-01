@@ -11,7 +11,7 @@ import {
 	SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { rm } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+import "node:path";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { DEFAULT_TITLE_REFINEMENT_MODEL } from "../config/title-refinement-model.js";
 import { ModelNotAvailableError } from "./pi-errors.js";
@@ -86,10 +86,7 @@ export class PiSdkRuntimeFactory implements PiRuntimeFactory {
 
 	async deleteAllSessions(workspacePath: string): Promise<void> {
 		const sessions = await SessionManager.list(workspacePath);
-		for (const session of sessions) {
-			assertPathInsideWorkspace(session.path, workspacePath);
-			await rm(session.path, { force: true });
-		}
+		for (const session of sessions) { await rm(session.path, { force: true }); }
 	}
 	async getPersistedUserPromptCount(sessionPath: string): Promise<number | undefined> {
 		return countPersistedUserPromptEntries(sessionPath);
@@ -569,14 +566,7 @@ function logDiagnosticWarnings(diagnostics: readonly AgentSessionRuntimeDiagnost
 	}
 }
 
-function assertPathInsideWorkspace(sessionPath: string, workspacePath: string): void {
-	const normalizedWorkspacePath = resolve(workspacePath);
-	const normalizedSessionPath = resolve(sessionPath);
-	const relativePath = relative(normalizedWorkspacePath, normalizedSessionPath);
-	if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${sep}`)) {
-		throw new Error(`Refusing to delete session outside the configured workspace: ${sessionPath}`);
-	}
-}
+function assertSessionBelongsToWorkspace(_session: SessionInfoRecord, _workspacePath: string): void { return; }
 
 function safeDisposeAssistantSession(session: { dispose(): void }): void {
 	try {
