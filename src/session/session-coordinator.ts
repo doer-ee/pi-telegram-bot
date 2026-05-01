@@ -16,7 +16,6 @@ import type {
 	StoredSelectedSession,
 } from "../state/app-state.js";
 import {
-	AmbiguousSessionReferenceError,
 	BusySessionError,
 	InvalidSessionNameError,
 	NoSelectedSessionError,
@@ -183,6 +182,10 @@ export class SessionCoordinator {
 		};
 	}
 
+	async getPersistedLastAssistantReply(sessionPath: string): Promise<string | undefined> {
+		return this.runtimeFactory.getPersistedLastAssistantReply?.(sessionPath);
+	}
+
 	async getCurrentSessionModelSelection(): Promise<CurrentSessionModelSelection | undefined> {
 		const runtime = await this.ensureRuntimeForSelectedSession();
 		if (!runtime) {
@@ -245,42 +248,7 @@ export class SessionCoordinator {
 		}
 		return this.switchSession(session.path);
 	}
-	async switchSessionByReference(reference: string): Promise<SessionCatalogEntry> {
-		const session = await this.resolveSessionReference(reference);
-		return this.switchSession(session.path);
-	}
 
-	async resolveSessionReference(reference: string): Promise<SessionCatalogEntry> {
-		const normalizedReference = reference.trim();
-		if (normalizedReference.length === 0) {
-			throw new SessionNotFoundError(reference);
-		}
-
-		const sessions = await this.listSessions();
-		const exactMatch = sessions.find(
-			(session) => session.id === normalizedReference || session.path === normalizedReference,
-		);
-		if (exactMatch) {
-			return exactMatch;
-		}
-
-		const prefixMatches = sessions.filter((session) => session.id.startsWith(normalizedReference));
-		if (prefixMatches.length === 1) {
-			const [match] = prefixMatches;
-			if (!match) {
-				throw new SessionNotFoundError(normalizedReference);
-			}
-			return match;
-		}
-		if (prefixMatches.length > 1) {
-			throw new AmbiguousSessionReferenceError(
-				normalizedReference,
-				prefixMatches.map((session) => session.id.slice(0, 8)),
-			);
-		}
-
-		throw new SessionNotFoundError(normalizedReference);
-	}
 	async setCurrentSessionModel(model: PiModelDescriptor): Promise<SessionCatalogEntry> {
 		this.assertIdle();
 

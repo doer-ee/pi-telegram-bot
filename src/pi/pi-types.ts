@@ -102,6 +102,7 @@ export interface PiRuntimeFactory {
 	createRuntime(options: { workspacePath: string; selectedSessionPath?: string }): Promise<PiRuntimePort>;
 	listSessions(workspacePath: string): Promise<SessionInfoRecord[]>;
 	getPersistedUserPromptCount(sessionPath: string): Promise<number | undefined>;
+	getPersistedLastAssistantReply?(sessionPath: string): Promise<string | undefined>;
 	updateSessionName(sessionPath: string, name: string): Promise<void>;
 	refineSessionTitle(request: SessionTitleRefinementRequest): Promise<string | undefined>;
 	runBackgroundAssistantPrompt?(request: BackgroundAssistantPromptRequest): Promise<string | undefined>;

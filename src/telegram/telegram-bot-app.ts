@@ -15,7 +15,6 @@ import { getServerTimezone } from "../scheduler/schedule-time.js";
 import type { ScheduledTaskService } from "../scheduler/scheduled-task-service.js";
 import type { ParsedScheduleInput, ScheduledTask, ScheduledTaskTarget } from "../scheduler/scheduled-task-types.js";
 import {
-	AmbiguousSessionReferenceError,
 	BusySessionError,
 	InvalidSessionNameError,
 	NoSelectedSessionError,
@@ -57,7 +56,7 @@ import { registerTelegramBotCommands } from "./telegram-command-definitions.js";
 import { createTelegramMessageClient } from "./telegram-message-client.js";
 import { TelegramReplyStreamer } from "./telegram-reply-streamer.js";
 import { SessionPinSync } from "./session-pin-sync.js";
-import { parseSwitchCommandTarget } from "./switch-command.js";
+import { sendStandaloneTelegramText } from "./send-telegram-text.js";
 
 type BotContext = Context<Update>;
 type MessageUpdate = Extract<Update, { message: unknown }>;
@@ -84,7 +83,7 @@ const INTERACTIVE_MESSAGE_KEYS = [
 	"voice",
 ] as const;
 
-export const SESSION_SWITCH_CALLBACK_PREFIX = "switch:";
+export const SESSION_SELECTION_CALLBACK_PREFIX = "sessions:select:";
 export const SESSION_SELECTION_PAGE_CALLBACK_PREFIX = "sessions:page:";
 export const SESSION_SELECTION_CANCEL_CALLBACK_DATA = "sessions:cancel";
 const SESSION_SELECTION_PAGE_SIZE = 5;
@@ -287,19 +286,6 @@ export class TelegramBotApp {
 			await this.runWithErrorHandling(ctx, async () => {
 				const aborted = await this.coordinator.abortActiveRun();
 				await ctx.reply(aborted ? "Abort requested." : "No active run to abort.");
-			});
-		});
-
-		this.bot.command("switch", async (ctx) => {
-			const target = parseSwitchCommandTarget(ctx.message.text) ?? parseSingleValueCommandArgument(ctx.message.text);
-			if (!target) {
-				await ctx.reply("Usage: /switch <session-id-prefix-or-id>");
-				return;
-			}
-
-			await this.runWithErrorHandling(ctx, async () => {
-				const session = await this.coordinator.switchSessionByReference(target);
-				await ctx.reply(formatSelectionChangedText(session));
 			});
 		});
 
@@ -590,15 +576,30 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 			});
 		});
 
-		this.bot.action(new RegExp(`^${SESSION_SWITCH_CALLBACK_PREFIX}(.+)$`), async (ctx) => {
+		this.bot.action(new RegExp(`^${SESSION_SELECTION_CALLBACK_PREFIX}(.+)$`), async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
 				const sessionId = ctx.match[1];
 				if (!sessionId) {
 					throw new SessionNotFoundError("missing-session-id");
 				}
+
+				const callbackMessage = ctx.callbackQuery.message;
+				const chatId = callbackMessage?.chat.id;
+				if (chatId === undefined) {
+					throw new Error("Could not continue the session selection flow.");
+				}
+
 				const session = await this.coordinator.switchSessionById(sessionId);
+				const persistedReply = await this.coordinator.getPersistedLastAssistantReply(session.path);
 				await ctx.answerCbQuery("Session selected.");
 				await ctx.reply(formatSelectionChangedText(session));
+				if (!persistedReply) {
+					await ctx.reply("No persisted assistant reply is available for this session yet.");
+					return;
+				}
+
+				const client = createTelegramMessageClient(ctx.telegram);
+				await sendStandaloneTelegramText(client, chatId, persistedReply, "markdown", this.config.telegramChunkSize);
 			});
 		});
 
@@ -777,16 +778,6 @@ function isCancelText(text: string): boolean {
 	return text.trim().toLowerCase() === "cancel";
 }
 
-function parseSingleValueCommandArgument(text: string): string | undefined {
-	const argument = getCommandArgumentText(text).trim();
-	return argument.length > 0 ? argument : undefined;
-}
-
-function getCommandArgumentText(text: string): string {
-	const firstSpaceIndex = text.indexOf(" ");
-	return firstSpaceIndex === -1 ? "" : text.slice(firstSpaceIndex + 1);
-}
-
 function toExistingSessionScheduledTaskTarget(session: SessionCatalogEntry) {
 	return {
 		type: "existing_session" as const,
@@ -953,16 +944,16 @@ function requireScheduledTaskSelection(tasks: ScheduledTask[], selectionToken: s
 }
 
 export function buildSessionKeyboard(sessions: SessionCatalogEntry[], pageIndex = 0) {
-	const switchableSessions = getSwitchableSessions(sessions);
-	if (switchableSessions.length === 0) {
+	const selectableSessions = getSelectableSessions(sessions);
+	if (selectableSessions.length === 0) {
 		return undefined;
 	}
 
-	const pageCount = getSessionSelectionPageCount(switchableSessions.length);
-	const normalizedPageIndex = normalizeSessionSelectionPageIndex(pageIndex, switchableSessions.length);
-	const pageSessions = getSessionSelectionPageSessions(switchableSessions, normalizedPageIndex);
+	const pageCount = getSessionSelectionPageCount(selectableSessions.length);
+	const normalizedPageIndex = normalizeSessionSelectionPageIndex(pageIndex, selectableSessions.length);
+	const pageSessions = getSessionSelectionPageSessions(selectableSessions, normalizedPageIndex);
 	const rows = pageSessions.map((session) => [
-		Markup.button.callback(buildSessionButtonLabel(session), `${SESSION_SWITCH_CALLBACK_PREFIX}${session.id}`),
+		Markup.button.callback(buildSessionButtonLabel(session), `${SESSION_SELECTION_CALLBACK_PREFIX}${session.id}`),
 	]);
 	const navigationRow = buildSessionSelectionNavigationRow(normalizedPageIndex, pageCount);
 	if (navigationRow) {
@@ -1004,20 +995,20 @@ function buildSessionSelectionPopup(sessions: SessionCatalogEntry[], pageIndex =
 	text: string;
 	keyboard: ReturnType<typeof buildSessionKeyboard> | undefined;
 } {
-	const switchableSessions = getSwitchableSessions(sessions);
-	if (switchableSessions.length === 0) {
+	const selectableSessions = getSelectableSessions(sessions);
+	if (selectableSessions.length === 0) {
 		return {
 			text: formatSessionsText(sessions),
 			keyboard: undefined,
 		};
 	}
 
-	const normalizedPageIndex = normalizeSessionSelectionPageIndex(pageIndex, switchableSessions.length);
-	const pageSessions = getSessionSelectionPageSessions(switchableSessions, normalizedPageIndex);
+	const normalizedPageIndex = normalizeSessionSelectionPageIndex(pageIndex, selectableSessions.length);
+	const pageSessions = getSessionSelectionPageSessions(selectableSessions, normalizedPageIndex);
 	return {
 		text: formatSessionsText(pageSessions, {
 			pageIndex: normalizedPageIndex,
-			pageCount: getSessionSelectionPageCount(switchableSessions.length),
+			pageCount: getSessionSelectionPageCount(selectableSessions.length),
 			pageStartIndex: normalizedPageIndex * SESSION_SELECTION_PAGE_SIZE,
 		}),
 		keyboard: buildSessionKeyboard(sessions, normalizedPageIndex),
@@ -1045,7 +1036,7 @@ function buildModelSelectionPopup(selection: CurrentSessionModelSelection, pageI
 	};
 }
 
-function getSwitchableSessions(sessions: SessionCatalogEntry[]): SessionCatalogEntry[] {
+function getSelectableSessions(sessions: SessionCatalogEntry[]): SessionCatalogEntry[] {
 	return sessions.filter((session) => session.source === "pi");
 }
 
@@ -1148,7 +1139,7 @@ export async function dismissSessionSelectionKeyboard(ctx: SessionSelectionCance
 }
 
 function buildSessionButtonLabel(session: SessionCatalogEntry): string {
-	const prefix = session.isSelected ? "current" : "switch";
+	const prefix = session.isSelected ? "current" : "select";
 	const name = session.name ?? session.id.slice(0, 8);
 	return `${prefix}: ${name}`.slice(0, 60);
 }
@@ -1243,8 +1234,7 @@ function formatUserFacingError(error: unknown): string {
 		error instanceof ModelNotAvailableError ||
 		error instanceof NoSelectedSessionError ||
 		error instanceof SelectedModelUnavailableError ||
-		error instanceof SessionNotFoundError ||
-		error instanceof AmbiguousSessionReferenceError
+		error instanceof SessionNotFoundError
 	) {
 		return error.message;
 	}

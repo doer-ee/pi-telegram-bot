@@ -1,4 +1,5 @@
 import { chunkText } from "./chunk-text.js";
+import { sendStandaloneTelegramText } from "./send-telegram-text.js";
 import type { TelegramMessageClient, TelegramTextParseMode } from "./telegram-message-client.js";
 
 export interface TelegramReplyStreamerOptions {
@@ -190,9 +191,7 @@ export class TelegramReplyStreamer {
 	}
 
 	private async sendStandaloneText(text: string, renderMode: TelegramTextParseMode): Promise<void> {
-		for (const chunk of chunkText(text, this.options.chunkSize)) {
-			await this.client.sendText(this.chatId, chunk, { parseMode: renderMode });
-		}
+		await sendStandaloneTelegramText(this.client, this.chatId, text, renderMode, this.options.chunkSize);
 	}
 
 	private enqueue(task: () => Promise<void>): Promise<void> {

@@ -4,6 +4,7 @@ import type { Update } from "telegraf/types";
 import type { AppConfig } from "../src/config/app-config.js";
 import type { PiRuntimeFactory, SessionTitleRefinementRequest } from "../src/pi/pi-types.js";
 import { SessionCoordinator, type SessionCatalogEntry } from "../src/session/session-coordinator.js";
+import { chunkText } from "../src/telegram/chunk-text.js";
 import {
 	createEmptyAppState,
 	type AppStateStore,
@@ -12,10 +13,12 @@ import {
 } from "../src/state/app-state.js";
 import { SessionPinSync } from "../src/telegram/session-pin-sync.js";
 import {
+	SESSION_SELECTION_CALLBACK_PREFIX,
 	SESSION_SELECTION_CANCEL_CALLBACK_DATA,
 	SESSION_SELECTION_PAGE_CALLBACK_PREFIX,
 	TelegramBotApp,
 } from "../src/telegram/telegram-bot-app.js";
+import { formatTelegramMarkdown } from "../src/telegram/telegram-markdown.js";
 
 const AUTHORIZED_USER_ID = 101;
 const CHAT_ID = 101;
@@ -69,11 +72,11 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 				text: expect.stringContaining("Sessions (page 1/2):"),
 				reply_markup: {
 					inline_keyboard: [
-						[{ text: "current: Alpha", callback_data: `switch:${ALPHA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Beta", callback_data: `switch:${BETA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Gamma", callback_data: `switch:${GAMMA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Delta", callback_data: `switch:${DELTA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Epsilon", callback_data: `switch:${EPSILON_SESSION.id}`, hide: false }],
+						[{ text: "current: Alpha", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ALPHA_SESSION.id}`, hide: false }],
+						[{ text: "select: Beta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${BETA_SESSION.id}`, hide: false }],
+						[{ text: "select: Gamma", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${GAMMA_SESSION.id}`, hide: false }],
+						[{ text: "select: Delta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${DELTA_SESSION.id}`, hide: false }],
+						[{ text: "select: Epsilon", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${EPSILON_SESSION.id}`, hide: false }],
 						[{ text: "Next page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}1`, hide: false }],
 						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
 					],
@@ -107,11 +110,11 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 				text: expect.stringContaining("Sessions (page 2/3):"),
 				reply_markup: {
 					inline_keyboard: [
-						[{ text: "switch: Zeta", callback_data: `switch:${ZETA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Eta", callback_data: `switch:${ETA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Theta", callback_data: `switch:${THETA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Iota", callback_data: `switch:${IOTA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Kappa", callback_data: `switch:${KAPPA_SESSION.id}`, hide: false }],
+						[{ text: "select: Zeta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ZETA_SESSION.id}`, hide: false }],
+						[{ text: "select: Eta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ETA_SESSION.id}`, hide: false }],
+						[{ text: "select: Theta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${THETA_SESSION.id}`, hide: false }],
+						[{ text: "select: Iota", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${IOTA_SESSION.id}`, hide: false }],
+						[{ text: "select: Kappa", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${KAPPA_SESSION.id}`, hide: false }],
 						[
 							{ text: "Last page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}0`, hide: false },
 							{ text: "Next page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}2`, hide: false },
@@ -152,8 +155,8 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 				text: expect.stringContaining("Sessions (page 2/2):"),
 				reply_markup: {
 					inline_keyboard: [
-						[{ text: "switch: Zeta", callback_data: `switch:${ZETA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Eta", callback_data: `switch:${ETA_SESSION.id}`, hide: false }],
+						[{ text: "select: Zeta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ZETA_SESSION.id}`, hide: false }],
+						[{ text: "select: Eta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ETA_SESSION.id}`, hide: false }],
 						[{ text: "Last page", callback_data: `${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}0`, hide: false }],
 						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
 					],
@@ -169,16 +172,16 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 		await harness.handleUpdate(createSessionsCommandUpdate());
 
 		expect(harness.apiCalls).toHaveLength(1);
-			expect(harness.apiCalls[0]).toMatchObject({
+		expect(harness.apiCalls[0]).toMatchObject({
 			method: "sendMessage",
 			payload: {
 				chat_id: CHAT_ID,
-				text: "Sessions:\n* 1. 11111111 Alpha | 2026-04-24 19:00\n   first message for Alpha\n  2. 22222222 Beta | 2026-04-24 19:00\n   first message for Beta\n  3. 33333333 Gamma | 2026-04-24 19:00\n   first message for Gamma\n\nTap a button below or use /switch <session-id-prefix-or-id>.",
+				text: "Sessions:\n* 1. 11111111 Alpha | 2026-04-24 19:00\n   first message for Alpha\n  2. 22222222 Beta | 2026-04-24 19:00\n   first message for Beta\n  3. 33333333 Gamma | 2026-04-24 19:00\n   first message for Gamma\n\nTap a button below to select a session.",
 				reply_markup: {
 					inline_keyboard: [
-						[{ text: "current: Alpha", callback_data: `switch:${ALPHA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Beta", callback_data: `switch:${BETA_SESSION.id}`, hide: false }],
-						[{ text: "switch: Gamma", callback_data: `switch:${GAMMA_SESSION.id}`, hide: false }],
+						[{ text: "current: Alpha", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ALPHA_SESSION.id}`, hide: false }],
+						[{ text: "select: Beta", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${BETA_SESSION.id}`, hide: false }],
+						[{ text: "select: Gamma", callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${GAMMA_SESSION.id}`, hide: false }],
 						[{ text: "cancel", callback_data: SESSION_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
 					],
 				},
@@ -222,13 +225,17 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 		]);
 	});
 
-	it("keeps the existing switch callback flow working", async () => {
-		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
+	it("resends the selected session's persisted assistant reply after switching", async () => {
+		const persistedReply = "# Done\n\n| Col | Val |\n| --- | --- |\n| A | B |";
+		const expectedResentPayloadText = formatTelegramMarkdown(chunkText(persistedReply, createAppConfig().telegramChunkSize)[0] ?? "");
+		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS, {
+			[ZETA_SESSION.path]: persistedReply,
+		});
 
 		await harness.handleUpdate(
 			createCallbackQueryUpdate({
 				callbackQueryId: "switch-callback",
-				data: `switch:${ZETA_SESSION.id}`,
+				data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ZETA_SESSION.id}`,
 			}),
 		);
 
@@ -248,16 +255,55 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 					text: "Selected session 66666666 (Zeta).",
 				}),
 			},
+			{
+				method: "sendMessage",
+				payload: expect.objectContaining({
+					chat_id: CHAT_ID,
+					parse_mode: "MarkdownV2",
+				}),
+			},
 		]);
+		const resentReply = harness.apiCalls[2];
+		expect(resentReply).toBeDefined();
+		expect(resentReply).toEqual({
+			method: "sendMessage",
+			payload: expect.objectContaining({
+				chat_id: CHAT_ID,
+				text: expectedResentPayloadText,
+				parse_mode: "MarkdownV2",
+			}),
+		});
+	});
+
+	it("stays truthful when the selected session has no persisted assistant reply", async () => {
+		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
+
+		await harness.handleUpdate(
+			createCallbackQueryUpdate({
+				callbackQueryId: "empty-switch-callback",
+				data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ZETA_SESSION.id}`,
+			}),
+		);
+
+		expect(harness.apiCalls[harness.apiCalls.length - 1]).toEqual({
+			method: "sendMessage",
+			payload: expect.objectContaining({
+				chat_id: CHAT_ID,
+				text: "No persisted assistant reply is available for this session yet.",
+			}),
+		});
 	});
 });
 
-function createTelegramBotAppHarness(sessions: SessionCatalogEntry[]) {
+function createTelegramBotAppHarness(
+	sessions: SessionCatalogEntry[],
+	persistedReplies: Record<string, string | undefined> = {},
+) {
 	const apiCalls: TelegramApiCall[] = [];
 	restoreTelegramApi?.();
 	restoreTelegramApi = interceptTelegramApi(apiCalls);
 
-	const coordinator = new TestSessionCoordinator(sessions);
+	const coordinator = new TestSessionCoordinator(sessions, persistedReplies);
 	const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync());
 	const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
 	Reflect.set(bot, "botInfo", createBotInfo());
@@ -445,7 +491,10 @@ class TestSessionCoordinator extends SessionCoordinator {
 	listSessionsCalls = 0;
 	switchSessionByIdCalls: string[] = [];
 
-	constructor(private readonly sessions: SessionCatalogEntry[]) {
+	constructor(
+		private readonly sessions: SessionCatalogEntry[],
+		private readonly persistedReplies: Record<string, string | undefined>,
+	) {
 		super("/workspace", createAppStateStoreStub(), createUnusedRuntimeFactory());
 	}
 
@@ -464,6 +513,10 @@ class TestSessionCoordinator extends SessionCoordinator {
 			...session,
 			isSelected: true,
 		};
+	}
+
+	override async getPersistedLastAssistantReply(sessionPath: string): Promise<string | undefined> {
+		return this.persistedReplies[sessionPath];
 	}
 }
 

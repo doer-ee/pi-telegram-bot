@@ -12,12 +12,7 @@ const TELEGRAM_COMMAND_DEFINITIONS: readonly TelegramCommandDefinition[] = [
 	{ command: "help", description: "Show available commands" },
 	{ command: "status", description: "Show bot and session status" },
 	{ command: "new", description: "Create and select a new Pi session" },
-	{ command: "sessions", description: "List sessions and switch" },
-	{
-		command: "switch",
-		description: "Switch by session id or prefix",
-		helpUsage: "switch <session-id-prefix-or-id>",
-	},
+	{ command: "sessions", description: "List sessions and select one" },
 	{ command: "current", description: "Show the selected session" },
 	{ command: "rename", description: "Rename the selected session" },
 	{ command: "model", description: "Choose the current session model" },

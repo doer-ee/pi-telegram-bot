@@ -12,11 +12,9 @@ import type {
 	SessionInfoRecord,
 } from "../src/pi/pi-types.js";
 import {
-	AmbiguousSessionReferenceError,
 	BusySessionError,
 	InvalidSessionNameError,
 	NoSelectedSessionError,
-	SessionNotFoundError,
 } from "../src/session/session-errors.js";
 import { parseScheduleInput } from "../src/scheduler/schedule-parser.js";
 import { ScheduledTaskRuntime } from "../src/scheduler/scheduled-task-runtime.js";
@@ -732,44 +730,6 @@ describe("SessionCoordinator", () => {
 		});
 	});
 
-	describe("#given explicit session references", () => {
-		it("#when switching by exact id or unique prefix #then it resolves deterministically", async () => {
-			const runtimeFactory = new MockPiRuntimeFactory();
-			const coordinator = new SessionCoordinator(
-				workspacePath,
-				new FileAppStateStore(statePath),
-				runtimeFactory,
-			);
-
-			await coordinator.initialize();
-			const sessionA = await coordinator.createNewSession();
-			const sessionB = await coordinator.createNewSession();
-
-			const switchedByExactId = await coordinator.switchSessionByReference(sessionA.id);
-			expect(switchedByExactId.path).toBe(sessionA.path);
-
-			const switchedByPrefix = await coordinator.switchSessionByReference(sessionB.id.slice(0, 2));
-			expect(switchedByPrefix.path).toBe(sessionB.path);
-		});
-
-		it("#when switching by an ambiguous or missing reference #then it rejects clearly", async () => {
-			const runtimeFactory = new MockPiRuntimeFactory();
-			const coordinator = new SessionCoordinator(
-				workspacePath,
-				new FileAppStateStore(statePath),
-				runtimeFactory,
-			);
-
-			await coordinator.initialize();
-			await coordinator.createNewSession();
-			await coordinator.createNewSession();
-
-			await expect(coordinator.switchSessionByReference("s")).rejects.toBeInstanceOf(
-				AmbiguousSessionReferenceError,
-			);
-			await expect(coordinator.switchSessionByReference("missing")).rejects.toBeInstanceOf(SessionNotFoundError);
-		});
-	});
 });
 
 describe("scheduled prompts", () => {

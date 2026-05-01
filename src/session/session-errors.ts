@@ -19,13 +19,6 @@ export class SessionNotFoundError extends Error {
 	}
 }
 
-export class AmbiguousSessionReferenceError extends Error {
-	constructor(identifier: string, matches: string[]) {
-		super(`Session reference '${identifier}' is ambiguous. Matches: ${matches.join(", ")}`);
-		this.name = "AmbiguousSessionReferenceError";
-	}
-}
-
 export class SelectedModelUnavailableError extends Error {
 	constructor() {
 		super("Selected model is no longer available.");

@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/doer-ee/pi-telegram-bot/actions/workflows/ci.yml/badge.svg)
 
-A private Telegram control surface for people who already use Pi locally and want both live remote prompting and scheduled automation from their phone. It is designed as a lightweight OpenClaw-like system for a single user and a single workspace: you can create and switch Pi sessions, send prompts, monitor progress, and schedule one-time or recurring runs without exposing your machine through a public web app.
+A private Telegram control surface for people who already use Pi locally and want both live remote prompting and scheduled automation from their phone. It is designed as a lightweight OpenClaw-like system for a single user and a single workspace: you can create and select Pi sessions, send prompts, monitor progress, and schedule one-time or recurring runs without exposing your machine through a public web app.
 
 Telegram works well here because it's fast on mobile, has reliable push notifications, and gives you a familiar command/chat UX from anywhere.
 
@@ -29,7 +29,7 @@ Telegram works well here because it's fast on mobile, has reliable push notifica
 - restricts access to one Telegram user ID
 - keeps one selected session active and persists that selection across restarts
 - lets you change the current session's active conversation model with `/model`
-- supports `/new`, `/sessions`, `/switch`, `/current`, `/rename`, `/status`, and `/abort`
+- supports `/new`, `/sessions`, `/current`, `/rename`, `/status`, and `/abort`
 - supports interactive scheduling with `/schedule`, `/schedules`, `/unschedule`, and `/runscheduled`
 - registers the Telegram command menu on startup
 - streams replies back into Telegram and falls back to plain text if Markdown formatting is rejected
@@ -183,7 +183,6 @@ Available commands:
 - `/status`
 - `/new`
 - `/sessions`
-- `/switch <session-id-prefix-or-id>`
 - `/current`
 - `/rename`
 - `/model`
@@ -197,12 +196,12 @@ Behavior notes:
 
 - any non-command text message is sent to the selected session
 - if no session is selected yet, the first freeform text message creates one automatically
-- `/sessions` shows recent sessions and inline buttons for switching
-- `/switch` also supports a unique session ID prefix
+- `/sessions` shows recent sessions and inline buttons for selecting
+- selecting a session from `/sessions` also resends that session's last persisted assistant reply when one exists
 - `/model` opens an inline picker for actually available models for the current session's active conversation model
 - `/model` shows recently used models first for the current workspace
 - `/model` does not change the separate background title-refinement model
-- while a run is active, new prompts, `/new`, session switches, and model changes are rejected until the run finishes or you use `/abort`
+- while a run is active, new prompts, `/new`, session selection changes, and model changes are rejected until the run finishes or you use `/abort`
 - `/rename` opens a cancelable rename prompt for the selected session
 - non-text Telegram attachments are not sent to Pi in this MVP
 
@@ -263,10 +262,10 @@ This demo shows the core flow:
 1. `/new`
 2. send a prompt
 3. `/status`
-4. `/switch`
+4. `/sessions`
 5. `/abort`
 
-<img src="docs/demo.gif" alt="Demo: /new to prompt to /status to /switch to /abort" width="320" />
+<img src="docs/demo.gif" alt="Demo: /new to prompt to /status to /sessions to /abort" width="320" />
 
 ## Local-only files and repo hygiene
 

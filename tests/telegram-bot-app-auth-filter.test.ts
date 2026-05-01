@@ -74,7 +74,7 @@ function createPrivateCallbackQueryUpdate(options: { fromId: number }): Update {
 			id: "callback-1",
 			chat_instance: "private-chat",
 			from: createUser(options.fromId),
-			data: "switch:session-1",
+			data: "sessions:select:session-1",
 			message: {
 				message_id: 11,
 				date: 1,

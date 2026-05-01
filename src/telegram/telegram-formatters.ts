@@ -122,7 +122,7 @@ export function formatSessionsText(sessions: SessionCatalogEntry[], options?: Fo
 	}
 
 	lines.push("");
-	lines.push("Tap a button below or use /switch <session-id-prefix-or-id>.");
+	lines.push("Tap a button below to select a session.");
 	return lines.join("\n");
 }
 

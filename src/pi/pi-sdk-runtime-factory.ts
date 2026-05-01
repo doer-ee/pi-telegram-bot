@@ -87,6 +87,10 @@ export class PiSdkRuntimeFactory implements PiRuntimeFactory {
 		return countPersistedUserPromptEntries(sessionPath);
 	}
 
+	async getPersistedLastAssistantReply(sessionPath: string): Promise<string | undefined> {
+		return readPersistedLastAssistantReply(sessionPath);
+	}
+
 	async updateSessionName(sessionPath: string, name: string): Promise<void> {
 		SessionManager.open(sessionPath).appendSessionInfo(name);
 	}
@@ -309,7 +313,58 @@ async function countPersistedUserPromptEntries(sessionPath: string): Promise<num
 	}
 }
 
+async function readPersistedLastAssistantReply(sessionPath: string): Promise<string | undefined> {
+	try {
+		const content = await readFile(sessionPath, "utf8");
+		return getLastAssistantReplyFromPersistedSession(content);
+	} catch {
+		return undefined;
+	}
+}
+
 function countUserPromptEntriesFromPersistedSession(content: string): number | undefined {
+	const entries = parsePersistedSessionEntries(content);
+	if (!entries) {
+		return undefined;
+	}
+
+	let userPromptCount = 0;
+	for (const entry of entries) {
+		if (entry.type === "message" && entry.role === "user") {
+			userPromptCount += 1;
+		}
+	}
+
+	return userPromptCount;
+}
+
+function getLastAssistantReplyFromPersistedSession(content: string): string | undefined {
+	const entries = parsePersistedSessionEntries(content);
+	if (!entries) {
+		return undefined;
+	}
+
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (!entry || entry.type !== "message" || entry.role !== "assistant") {
+			continue;
+		}
+
+		const text = extractPersistedMessageText(entry.content)?.trim();
+		if (text) {
+			return text;
+		}
+	}
+
+	return undefined;
+}
+
+type PersistedSessionEntry =
+	| { type: "session" }
+	| { type: "message"; role: string; content: unknown }
+	| { type: "other" };
+
+function parsePersistedSessionEntries(content: string): PersistedSessionEntry[] | undefined {
 	const lines = content
 		.split("\n")
 		.map((line) => line.trim())
@@ -319,8 +374,8 @@ function countUserPromptEntriesFromPersistedSession(content: string): number | u
 		return undefined;
 	}
 
+	const entries: PersistedSessionEntry[] = [];
 	let sawSessionHeader = false;
-	let userPromptCount = 0;
 
 	for (const line of lines) {
 		let entry: unknown;
@@ -336,10 +391,12 @@ function countUserPromptEntriesFromPersistedSession(content: string): number | u
 
 		if (entry.type === "session") {
 			sawSessionHeader = true;
+			entries.push({ type: "session" });
 			continue;
 		}
 
 		if (entry.type !== "message") {
+			entries.push({ type: "other" });
 			continue;
 		}
 
@@ -347,12 +404,29 @@ function countUserPromptEntriesFromPersistedSession(content: string): number | u
 			return undefined;
 		}
 
-		if (entry.message.role === "user") {
-			userPromptCount += 1;
-		}
+		entries.push({
+			type: "message",
+			role: entry.message.role,
+			content: entry.message.content,
+		});
 	}
 
-	return sawSessionHeader ? userPromptCount : undefined;
+	return sawSessionHeader ? entries : undefined;
+}
+
+function extractPersistedMessageText(content: unknown): string | undefined {
+	if (typeof content === "string") {
+		return content;
+	}
+
+	if (!Array.isArray(content)) {
+		return undefined;
+	}
+
+	const parts = content
+		.filter((part) => isRecord(part) && part.type === "text" && typeof part.text === "string")
+		.map((part) => part.text);
+	return parts.length > 0 ? parts.join("") : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

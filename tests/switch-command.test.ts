@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { parseSwitchCommandTarget } from "../src/telegram/switch-command.js";
+import { TELEGRAM_BOT_COMMANDS, getTelegramHelpLines } from "../src/telegram/telegram-command-definitions.js";
 
-describe("parseSwitchCommandTarget", () => {
-	it("returns the explicit session reference for /switch commands", () => {
-		expect(parseSwitchCommandTarget("/switch s2-session")).toBe("s2-session");
-		expect(parseSwitchCommandTarget("/switch   s2  ")).toBe("s2");
+describe("switch command removal", () => {
+	it("omits /switch from the registered Telegram commands", () => {
+		expect(TELEGRAM_BOT_COMMANDS.some((command) => command.command === "switch")).toBe(false);
 	});
 
-	it("returns undefined when the switch target is missing", () => {
-		expect(parseSwitchCommandTarget("/switch")).toBeUndefined();
-		expect(parseSwitchCommandTarget("/switch   ")).toBeUndefined();
+	it("omits /switch from the generated help lines", () => {
+		expect(getTelegramHelpLines().some((line) => line.includes("/switch"))).toBe(false);
 	});
 });

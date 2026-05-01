@@ -362,12 +362,49 @@ describe("PiSdkRuntimeFactory", () => {
 		expect(readFileMock).toHaveBeenCalledWith("/workspace/.pi/sessions/session.jsonl", "utf8");
 	});
 
+	it("#given persisted assistant replies in session history #when requesting the last assistant reply #then it returns the final persisted assistant text only", async () => {
+		readFileMock.mockResolvedValue([
+			JSON.stringify({
+				type: "session",
+				id: "session-1",
+				timestamp: "2026-04-26T14:00:00.000Z",
+				cwd: "/workspace",
+			}),
+			JSON.stringify({
+				type: "message",
+				id: "entry-1",
+				parentId: null,
+				timestamp: "2026-04-26T14:00:01.000Z",
+				message: { role: "assistant", content: "first reply" },
+			}),
+			JSON.stringify({
+				type: "message",
+				id: "entry-2",
+				parentId: "entry-1",
+				timestamp: "2026-04-26T14:00:02.000Z",
+				message: { role: "user", content: "follow-up" },
+			}),
+			JSON.stringify({
+				type: "message",
+				id: "entry-3",
+				parentId: "entry-2",
+				timestamp: "2026-04-26T14:00:03.000Z",
+				message: { role: "assistant", content: [{ type: "text", text: "final" }, { type: "text", text: " reply" }] },
+			}),
+		].join("\n"));
+
+		const factory = new PiSdkRuntimeFactory("/agent-dir");
+
+		await expect(factory.getPersistedLastAssistantReply("/workspace/.pi/sessions/session.jsonl")).resolves.toBe("final reply");
+	});
+
 	it("#given an unreadable selected session path #when requesting the prompt count #then it degrades safely instead of throwing", async () => {
 		readFileMock.mockRejectedValue(Object.assign(new Error("permission denied"), { code: "EACCES" }));
 
 		const factory = new PiSdkRuntimeFactory("/agent-dir");
 
 		await expect(factory.getPersistedUserPromptCount("/workspace/.pi/sessions/session.jsonl")).resolves.toBeUndefined();
+		await expect(factory.getPersistedLastAssistantReply("/workspace/.pi/sessions/session.jsonl")).resolves.toBeUndefined();
 	});
 
 	it("#given a corrupt selected session file #when requesting the prompt count #then it degrades safely instead of guessing", async () => {

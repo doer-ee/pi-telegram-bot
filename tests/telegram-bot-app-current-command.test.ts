@@ -150,7 +150,7 @@ it("creates a frozen current-session scheduled task through the menu flow and sk
 
 	const scheduler = new TestScheduledTaskService();
 	const currentSession = createCurrentSession({ name: "Selected session" });
-	const harness = createTelegramBotAppHarness(currentSession, scheduler, new SchedulerCommandCoordinator(currentSession));
+	const harness = createTelegramBotAppHarness(currentSession, scheduler);
 
 	await harness.handleUpdate(createCommandUpdate("/schedule"));
 	await harness.handleUpdate(createCallbackUpdate(SCHEDULE_TARGET_CURRENT_CALLBACK_DATA));
@@ -209,7 +209,7 @@ it("creates a frozen current-session scheduled task through the menu flow and sk
 
 		const scheduler = new TestScheduledTaskService();
 		const currentSession = createCurrentSession({ name: "Selected session" });
-		const harness = createTelegramBotAppHarness(currentSession, scheduler, new SchedulerCommandCoordinator(currentSession));
+		const harness = createTelegramBotAppHarness(currentSession, scheduler);
 
 		await harness.handleUpdate(createCommandUpdate("/schedule"));
 		await harness.handleUpdate(createCallbackUpdate(SCHEDULE_TARGET_CURRENT_CALLBACK_DATA));
@@ -697,12 +697,6 @@ class TestSessionCoordinator extends SessionCoordinator {
 
 	override async getCurrentSessionWithPromptCount(): Promise<CurrentSessionEntry | undefined> {
 		return this.currentSession;
-	}
-}
-
-class SchedulerCommandCoordinator extends TestSessionCoordinator {
-	override async resolveSessionReference(_reference: string): Promise<SessionCatalogEntry> {
-		return createCurrentSession({ name: "Selected session" });
 	}
 }
 
