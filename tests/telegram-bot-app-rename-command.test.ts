@@ -340,6 +340,7 @@ function createAppStateStoreStub(): AppStateStore {
 		saveBotOwnedSessionPin: async (_workspacePath: string, _botOwnedSessionPin: StoredBotOwnedSessionPin) => undefined,
 		clearBotOwnedSessionPin: async (_workspacePath: string) => undefined,
 		saveModelRecency: async (_workspacePath: string, _modelRecency) => undefined,
+		saveScheduledTasks: async (_workspacePath: string, _scheduledTasks) => undefined,
 	};
 }
 

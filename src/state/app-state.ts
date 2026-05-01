@@ -1,3 +1,5 @@
+import type { ScheduledTask } from "../scheduler/scheduled-task-types.js";
+
 export interface StoredSelectedSession {
 	path: string;
 	sessionId: string;
@@ -17,11 +19,12 @@ export interface StoredRecentModel {
 }
 
 export interface AppState {
-	version: 1;
+	version: 2;
 	workspacePath: string;
 	selectedSession?: StoredSelectedSession | undefined;
 	botOwnedSessionPin?: StoredBotOwnedSessionPin | undefined;
 	modelRecency?: StoredRecentModel[] | undefined;
+	scheduledTasks?: ScheduledTask[] | undefined;
 }
 
 export interface AppStateStore {
@@ -31,11 +34,12 @@ export interface AppStateStore {
 	saveBotOwnedSessionPin(workspacePath: string, botOwnedSessionPin: StoredBotOwnedSessionPin): Promise<void>;
 	clearBotOwnedSessionPin(workspacePath: string): Promise<void>;
 	saveModelRecency(workspacePath: string, modelRecency: StoredRecentModel[]): Promise<void>;
+	saveScheduledTasks(workspacePath: string, scheduledTasks: ScheduledTask[]): Promise<void>;
 }
 
 export function createEmptyAppState(workspacePath: string): AppState {
 	return {
-		version: 1,
+		version: 2,
 		workspacePath,
 	};
 }

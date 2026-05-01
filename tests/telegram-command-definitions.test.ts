@@ -8,18 +8,22 @@ import { formatHelpText } from "../src/telegram/telegram-formatters.js";
 
 describe("TELEGRAM_BOT_COMMANDS", () => {
 	it("matches the supported Telegram command surface", () => {
-			expect(TELEGRAM_BOT_COMMANDS).toEqual([
-				{ command: "start", description: "Show bot status and help" },
-				{ command: "help", description: "Show available commands" },
-				{ command: "status", description: "Show bot and session status" },
-				{ command: "new", description: "Create and select a new Pi session" },
-				{ command: "sessions", description: "List sessions and switch" },
-				{ command: "switch", description: "Switch by session id or prefix" },
-				{ command: "current", description: "Show the selected session" },
-				{ command: "rename", description: "Rename the selected session" },
-				{ command: "model", description: "Choose the current session model" },
-				{ command: "abort", description: "Abort the active run" },
-			]);
+						expect(TELEGRAM_BOT_COMMANDS).toEqual([
+			{ command: "start", description: "Show bot status and help" },
+			{ command: "help", description: "Show available commands" },
+			{ command: "status", description: "Show bot and session status" },
+			{ command: "new", description: "Create and select a new Pi session" },
+			{ command: "sessions", description: "List sessions and switch" },
+			{ command: "switch", description: "Switch by session id or prefix" },
+			{ command: "current", description: "Show the selected session" },
+			{ command: "rename", description: "Rename the selected session" },
+			{ command: "model", description: "Choose the current session model" },
+			{ command: "abort", description: "Abort the active run" },
+			{ command: "schedule", description: "Start the schedule flow" },
+			{ command: "schedules", description: "List scheduled tasks" },
+			{ command: "unschedule", description: "Choose a scheduled task to delete" },
+			{ command: "runscheduled", description: "Choose a scheduled task to run now" },
+		]);
 		});
 });
 
@@ -43,6 +47,9 @@ describe("formatHelpText", () => {
 		}
 
 		expect(helpText).toContain("/rename - Rename the selected session");
+		expect(helpText).toContain("/schedule - Start the schedule flow");
+		expect(helpText).toContain("/runscheduled - Choose a scheduled task to run now");
+		expect(helpText).toContain("/unschedule - Choose a scheduled task to delete");
 		expect(helpText).toContain("Any non-command text message is sent to the selected session.");
 	});
 });

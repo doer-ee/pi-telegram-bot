@@ -1,6 +1,13 @@
 import { basename } from "node:path";
 import type { CurrentSessionModelSelection, PiModelDescriptor } from "../pi/pi-types.js";
-import type { BotStatus, CurrentSessionEntry, SessionCatalogEntry } from "../session/session-coordinator.js";
+import { formatScheduleInstant } from "../scheduler/schedule-time.js";
+import type { ScheduledTaskDelayEvent, ScheduledTaskResultEvent } from "../scheduler/scheduled-task-service.js";
+import type { ParsedScheduleInput, ScheduledTask } from "../scheduler/scheduled-task-types.js";
+import {
+	type BotStatus,
+	type CurrentSessionEntry,
+	type SessionCatalogEntry,
+} from "../session/session-coordinator.js";
 import { getTelegramHelpLines } from "./telegram-command-definitions.js";
 
 export function formatHelpText(): string {
@@ -129,6 +136,193 @@ export function formatNewSessionText(session: SessionCatalogEntry): string {
 		`Workspace: ${session.cwd}`,
 		`Model: ${formatModel(session.activeModel)}`,
 	].join("\n");
+}
+
+export function formatScheduleTargetPromptText(): string {
+	return "Where should this scheduled prompt run?";
+}
+
+export function formatScheduleTargetGuidanceText(): string {
+	return "Use the buttons to choose new session or current session, or cancel.";
+}
+
+export function formatScheduleWhenPromptText(timezone: string): string {
+	return [
+		"When should this run?",
+		`Server local timezone: ${timezone}`,
+		"Examples: in 10 minutes, tomorrow at 5am, 2026-05-01 8:30pm, every tuesday at 8pm, every 5 minutes, every hour, every month",
+		"Tap cancel or send cancel to stop.",
+	].join("\n");
+}
+
+export function formatScheduleConfirmationText(schedule: ParsedScheduleInput): string {
+	return [
+		"I understood this schedule:",
+		schedule.normalizedText,
+		`Next run: ${formatScheduleInstant(schedule.nextRunAt, schedule.timezone)}`,
+		`Timezone: ${schedule.timezone}`,
+		"Tap confirm to continue, or cancel.",
+	].join("\n");
+}
+
+export function formatSchedulePromptText(): string {
+	return [
+		"What prompt should I send?",
+		"Tap cancel or send cancel to stop.",
+	].join("\n");
+}
+
+export function formatScheduleAwaitingConfirmationText(): string {
+	return "Please confirm or cancel the interpreted schedule first.";
+}
+
+export function formatScheduledTaskCreatedText(task: ScheduledTask): string {
+	return [
+		`Scheduled task ${task.id} created.`,
+		`Schedule: ${task.schedule.normalizedText}`,
+		`Next run: ${formatScheduleLine(task)}`,
+		`Target: ${formatScheduledTaskTarget(task.target)}`,
+		`Prompt: ${truncate(task.prompt, 120)}`,
+	].join("\n");
+}
+
+export function formatScheduledTasksText(tasks: ScheduledTask[]): string {
+	if (tasks.length === 0) {
+		return "No scheduled tasks.";
+	}
+
+	return [
+		"Scheduled tasks:",
+		...tasks.flatMap((task) => [
+			`${formatScheduledTaskReference(task.id)} | ${formatScheduleLine(task)} | ${formatScheduledTaskTarget(task.target)}`,
+			`  ${task.schedule.normalizedText}`,
+			`  ${truncate(task.prompt, 120)}`,
+		]),
+	].join("\n");
+}
+
+export interface FormatScheduledTaskSelectionTextOptions {
+	action: "unschedule" | "runscheduled";
+	pageIndex?: number;
+	pageCount?: number;
+	pageStartIndex?: number;
+}
+
+export function formatScheduledTaskSelectionText(
+	tasks: ScheduledTask[],
+	options: FormatScheduledTaskSelectionTextOptions,
+): string {
+	if (tasks.length === 0) {
+		return "No scheduled tasks.";
+	}
+
+	const actionText = options.action === "unschedule" ? "delete" : "run now";
+	const title =
+		options.pageCount && options.pageCount > 1
+			? `Select a scheduled task to ${actionText} (page ${(options.pageIndex ?? 0) + 1}/${options.pageCount}):`
+			: `Select a scheduled task to ${actionText}:`;
+	const pageStartIndex = options.pageStartIndex ?? 0;
+	return [
+		title,
+		...tasks.flatMap((task, index) => [
+			`${pageStartIndex + index + 1}. ${task.id} | ${formatScheduleLine(task)}`,
+			`   ${truncate(task.prompt, 100)}`,
+		]),
+		"",
+		"Tap a button below to continue or cancel.",
+	].join("\n");
+}
+
+export function formatScheduledTaskActionConfirmationText(
+	task: ScheduledTask,
+	action: "unschedule" | "runscheduled",
+): string {
+	return [
+		action === "unschedule" ? "Delete this scheduled task?" : "Run this scheduled task now?",
+		`Task ID: ${task.id}`,
+		`Schedule: ${task.schedule.normalizedText}`,
+		`Next run: ${formatScheduleLine(task)}`,
+		`Target: ${formatScheduledTaskTarget(task.target)}`,
+		`Prompt: ${truncate(task.prompt, 120)}`,
+		"Tap confirm to continue, or cancel.",
+	].join("\n");
+}
+
+export function formatScheduledTaskDeletedText(task: ScheduledTask): string {
+	return `Deleted scheduled task ${formatScheduledTaskReference(task.id)}.`;
+}
+
+export function formatScheduledTaskRunQueuedText(task: ScheduledTask, delayedByBusy: boolean): string {
+	return delayedByBusy
+		? `Scheduled task ${formatScheduledTaskReference(task.id)} will retry at ${formatScheduleLine(task)} because a foreground run is active.`
+		: `Scheduled task ${formatScheduledTaskReference(task.id)} queued to run now.`;
+}
+
+export function formatScheduledTaskDelayText(event: ScheduledTaskDelayEvent): string {
+	const waitingClause =
+		event.retryCount === 1
+			? "A foreground run is active"
+			: `Still waiting after ${event.retryCount} busy delays`;
+	return `${waitingClause}. Scheduled task ${formatScheduledTaskReference(event.task.id)} will retry at ${formatScheduleInstant(event.nextRetryAt, event.task.schedule.timezone)}.`;
+}
+
+export function formatScheduledTaskResultText(event: ScheduledTaskResultEvent): string {
+	if (event.result) {
+		return [
+			`Scheduled task ${formatScheduledTaskReference(event.task.id)} completed.`,
+			`Target: ${formatScheduledTaskTarget(event.task.target)}`,
+			`Session: ${formatSessionReference(event.result.sessionId)} (${event.result.sessionName ?? basename(event.result.sessionPath)})`,
+			`Reply: ${truncate(event.result.assistantText || "(empty assistant reply)", 240)}`,
+		].join("\n");
+	}
+
+	return [
+		`Scheduled task ${formatScheduledTaskReference(event.task.id)} failed.`,
+		`Target: ${formatScheduledTaskTarget(event.task.target)}`,
+		`Error: ${event.errorMessage ?? "unknown error"}`,
+	].join("\n");
+}
+
+function formatScheduledTaskTarget(target: ScheduledTask["target"]): string {
+	if (target.type === "new_session") {
+		return "new session";
+	}
+
+	return `existing session ${formatSessionReference(target.sessionId)} (${target.sessionName ?? basename(target.sessionPath)})`;
+}
+
+function formatScheduleLine(task: ScheduledTask): string {
+	return formatScheduleInstant(task.nextRunAt, task.schedule.timezone);
+}
+
+function formatScheduledTaskReference(taskId: string): string {
+	return taskId.slice(0, 8);
+}
+
+function formatSessionReference(sessionId: string): string {
+	return formatReferencePrefix(sessionId, 8);
+}
+
+function formatReferencePrefix(value: string, prefixLength: number): string {
+	if (value.length <= prefixLength) {
+		return value;
+	}
+
+	let end = prefixLength;
+	while (end < value.length) {
+		const trailingCharacter = value[end - 1];
+		if (!trailingCharacter || !isReferenceSeparator(trailingCharacter)) {
+			break;
+		}
+
+		end += 1;
+	}
+
+	return value.slice(0, end);
+}
+
+function isReferenceSeparator(value: string): boolean {
+	return value === "-" || value === "_" || value === ":";
 }
 
 function formatSelectedSessionSummary(session: SessionCatalogEntry | undefined): string {

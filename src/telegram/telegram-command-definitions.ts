@@ -22,6 +22,22 @@ const TELEGRAM_COMMAND_DEFINITIONS: readonly TelegramCommandDefinition[] = [
 	{ command: "rename", description: "Rename the selected session" },
 	{ command: "model", description: "Choose the current session model" },
 	{ command: "abort", description: "Abort the active run" },
+	{
+		command: "schedule",
+		description: "Start the schedule flow",
+		helpUsage: "schedule",
+	},
+	{ command: "schedules", description: "List scheduled tasks" },
+	{
+		command: "unschedule",
+		description: "Choose a scheduled task to delete",
+		helpUsage: "unschedule",
+	},
+	{
+		command: "runscheduled",
+		description: "Choose a scheduled task to run now",
+		helpUsage: "runscheduled",
+	},
 ];
 
 export const TELEGRAM_BOT_COMMANDS: readonly TelegramBotCommand[] = TELEGRAM_COMMAND_DEFINITIONS.map(

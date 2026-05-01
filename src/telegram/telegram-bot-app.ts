@@ -5,6 +5,16 @@ import type { AppConfig } from "../config/app-config.js";
 import { ModelNotAvailableError } from "../pi/pi-errors.js";
 import type { CurrentSessionModelSelection, PiModelDescriptor } from "../pi/pi-types.js";
 import {
+	createDeterministicScheduleInputParser,
+	type ScheduleInputParser,
+} from "../scheduler/schedule-ai-parser.js";
+import {
+	doesParsedScheduleRequireConfirmationRefresh,
+} from "../scheduler/schedule-parser.js";
+import { getServerTimezone } from "../scheduler/schedule-time.js";
+import type { ScheduledTaskService } from "../scheduler/scheduled-task-service.js";
+import type { ParsedScheduleInput, ScheduledTask, ScheduledTaskTarget } from "../scheduler/scheduled-task-types.js";
+import {
 	AmbiguousSessionReferenceError,
 	BusySessionError,
 	InvalidSessionNameError,
@@ -12,7 +22,10 @@ import {
 	SelectedModelUnavailableError,
 	SessionNotFoundError,
 } from "../session/session-errors.js";
-import { type SessionCatalogEntry, SessionCoordinator } from "../session/session-coordinator.js";
+import {
+	type SessionCatalogEntry,
+	SessionCoordinator,
+} from "../session/session-coordinator.js";
 import {
 	formatCurrentSessionText,
 	formatHelpText,
@@ -23,6 +36,18 @@ import {
 	formatNoSelectedSessionText,
 	formatRenameConfirmationText,
 	formatRenamePromptText,
+	formatScheduleAwaitingConfirmationText,
+	formatScheduleConfirmationText,
+	formatSchedulePromptText,
+	formatScheduleTargetGuidanceText,
+	formatScheduleTargetPromptText,
+	formatScheduleWhenPromptText,
+	formatScheduledTaskActionConfirmationText,
+	formatScheduledTaskCreatedText,
+	formatScheduledTaskDeletedText,
+	formatScheduledTaskRunQueuedText,
+	formatScheduledTaskSelectionText,
+	formatScheduledTasksText,
 	formatSelectionChangedText,
 	formatSessionsText,
 	formatStartText,
@@ -68,9 +93,64 @@ export const MODEL_SELECTION_CANCEL_CALLBACK_DATA = "models:cancel";
 export const MODEL_SWITCH_CALLBACK_PREFIX = "models:select:";
 const MODEL_SELECTION_PAGE_SIZE = 5;
 export const RENAME_CANCEL_CALLBACK_DATA = "rename:cancel";
+export const SCHEDULE_TARGET_NEW_CALLBACK_DATA = "schedule:target:new";
+export const SCHEDULE_TARGET_CURRENT_CALLBACK_DATA = "schedule:target:current";
+export const SCHEDULE_CONFIRM_CALLBACK_DATA = "schedule:confirm";
+export const SCHEDULE_CANCEL_CALLBACK_DATA = "schedule:cancel";
+export const SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX = "scheduled:page:";
+export const SCHEDULED_TASK_SELECTION_CANCEL_CALLBACK_DATA = "scheduled:cancel";
+export const SCHEDULED_TASK_UNSCHEDULE_SELECT_CALLBACK_PREFIX = "scheduled:unschedule:select:";
+export const SCHEDULED_TASK_RUN_SELECT_CALLBACK_PREFIX = "scheduled:run:select:";
+export const SCHEDULED_TASK_UNSCHEDULE_CONFIRM_CALLBACK_PREFIX = "scheduled:unschedule:confirm:";
+export const SCHEDULED_TASK_RUN_CONFIRM_CALLBACK_PREFIX = "scheduled:run:confirm:";
+const SCHEDULED_TASK_SELECTION_PAGE_SIZE = 5;
+
+type ScheduledTaskMenuAction = "unschedule" | "runscheduled";
 
 interface PendingRenameState {
 	promptMessageId: number;
+}
+
+type PendingScheduleState =
+	| {
+			step: "target";
+			promptMessageId: number;
+	  }
+	| {
+			step: "when";
+			promptMessageId: number;
+			target: ScheduledTaskTarget;
+	  }
+	| {
+			step: "confirm";
+			promptMessageId: number;
+			target: ScheduledTaskTarget;
+			schedule: ParsedScheduleInput;
+	  }
+	| {
+			step: "prompt";
+			promptMessageId: number;
+			target: ScheduledTaskTarget;
+			schedule: ParsedScheduleInput;
+	  };
+
+function createNoopScheduledTaskService(): ScheduledTaskService {
+	return {
+		start: async () => undefined,
+		stop: async () => undefined,
+		createTask: async () => {
+			throw new Error("Scheduler is not configured.");
+		},
+		listTasks: async () => {
+			throw new Error("Scheduler is not configured.");
+		},
+		deleteTaskByReference: async () => {
+			throw new Error("Scheduler is not configured.");
+		},
+		runTaskNowByReference: async () => {
+			throw new Error("Scheduler is not configured.");
+		},
+	};
 }
 
 export class TelegramBotApp {
@@ -79,17 +159,17 @@ export class TelegramBotApp {
 	private removeActiveSessionObserver: (() => void) | undefined;
 	private pendingRename: PendingRenameState | undefined;
 	private started = false;
-
 	constructor(
 		private readonly config: AppConfig,
 		private readonly coordinator: SessionCoordinator,
 		sessionPinSync: SessionPinSync,
+		private readonly scheduler: ScheduledTaskService = createNoopScheduledTaskService(),
+		private readonly scheduleInputParser: ScheduleInputParser = createDeterministicScheduleInputParser(),
 	) {
 		this.bot = new Telegraf<BotContext>(config.telegramBotToken);
 		this.sessionPinSync = sessionPinSync;
 		this.registerHandlers();
 	}
-
 	async start(): Promise<void> {
 		if (this.started) {
 			return;
@@ -104,11 +184,11 @@ export class TelegramBotApp {
 			},
 		});
 		await this.sessionPinSync.syncActiveSession(await this.coordinator.getCurrentSession());
+		await this.scheduler.start();
 		await registerTelegramBotCommands(this.bot.telegram);
 		await this.bot.launch();
 		this.started = true;
 	}
-
 	async stop(reason = "shutdown"): Promise<void> {
 		if (this.started) {
 			this.bot.stop(reason);
@@ -116,9 +196,9 @@ export class TelegramBotApp {
 		}
 		this.removeActiveSessionObserver?.();
 		this.removeActiveSessionObserver = undefined;
+		await this.scheduler.stop();
 		await this.coordinator.dispose();
 	}
-
 	private registerHandlers(): void {
 		this.bot.use(async (ctx, next) => {
 			if (this.isAuthorizedPrivateMessage(ctx)) {
@@ -174,6 +254,10 @@ export class TelegramBotApp {
 				if (!session) {
 					throw new NoSelectedSessionError();
 				}
+				if (this.pendingSchedule) {
+					await this.dismissInlineKeyboard(ctx.chat.id, this.pendingSchedule.promptMessageId);
+					this.pendingSchedule = undefined;
+				}
 
 				const promptMessage = await ctx.reply(formatRenamePromptText(session), buildRenameKeyboard());
 				this.pendingRename = {
@@ -207,7 +291,7 @@ export class TelegramBotApp {
 		});
 
 		this.bot.command("switch", async (ctx) => {
-			const target = parseSwitchCommandTarget(ctx.message.text);
+			const target = parseSwitchCommandTarget(ctx.message.text) ?? parseSingleValueCommandArgument(ctx.message.text);
 			if (!target) {
 				await ctx.reply("Usage: /switch <session-id-prefix-or-id>");
 				return;
@@ -219,19 +303,139 @@ export class TelegramBotApp {
 			});
 		});
 
-		this.bot.action(new RegExp(`^${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}(\\d+)$`), async (ctx) => {
+		this.bot.command("schedule", async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
-				const pageIndex = parseSessionSelectionPageIndex(ctx.match[1]);
-				const sessions = await this.coordinator.listSessions();
-				const popup = buildSessionSelectionPopup(sessions, pageIndex);
-				if (popup.keyboard) {
-					await ctx.editMessageText(popup.text, popup.keyboard);
-				} else {
-					await ctx.editMessageText(popup.text);
+				if (this.pendingRename) {
+					await this.dismissInlineKeyboard(ctx.chat.id, this.pendingRename.promptMessageId);
+					this.pendingRename = undefined;
 				}
-				await ctx.answerCbQuery();
+				if (this.pendingSchedule) {
+					await this.dismissInlineKeyboard(ctx.chat.id, this.pendingSchedule.promptMessageId);
+				}
+				const promptMessage = await ctx.reply(formatScheduleTargetPromptText(), buildScheduleTargetKeyboard());
+				this.pendingSchedule = {
+					step: "target",
+					promptMessageId: promptMessage.message_id,
+				};
 			});
 		});
+
+		this.bot.command("schedules", async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				await ctx.reply(formatScheduledTasksText(await this.scheduler.listTasks()));
+			});
+		});
+
+		this.bot.command("unschedule", async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		const popup = buildScheduledTaskSelectionPopup(await this.scheduler.listTasks(), "unschedule");
+		if (popup.keyboard) {
+			await ctx.reply(popup.text, popup.keyboard);
+			return;
+		}
+		await ctx.reply(popup.text);
+	});
+});
+
+		this.bot.command("runscheduled", async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		const popup = buildScheduledTaskSelectionPopup(await this.scheduler.listTasks(), "runscheduled");
+		if (popup.keyboard) {
+			await ctx.reply(popup.text, popup.keyboard);
+			return;
+		}
+		await ctx.reply(popup.text);
+	});
+});
+
+		this.bot.action(new RegExp(`^${SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX}(unschedule|runscheduled):(\\d+)$`), async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		const action = toScheduledTaskMenuAction(ctx.match[1]);
+		const pageIndex = parseScheduledTaskSelectionPageIndex(ctx.match[2]);
+		const popup = buildScheduledTaskSelectionPopup(await this.scheduler.listTasks(), action, pageIndex);
+		if (popup.keyboard) {
+			await ctx.editMessageText(popup.text, popup.keyboard);
+		} else {
+			await ctx.editMessageText(popup.text);
+		}
+		await ctx.answerCbQuery();
+	});
+});
+
+this.bot.action(SCHEDULED_TASK_SELECTION_CANCEL_CALLBACK_DATA, async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		await dismissSessionSelectionKeyboard(ctx);
+	});
+});
+
+this.bot.action(new RegExp(`^${SCHEDULED_TASK_UNSCHEDULE_SELECT_CALLBACK_PREFIX}([a-f0-9]+)$`), async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		const task = requireScheduledTaskSelection(await this.scheduler.listTasks(), ctx.match[1]);
+		await ctx.editMessageText(
+			formatScheduledTaskActionConfirmationText(task, "unschedule"),
+			buildScheduledTaskConfirmationKeyboard("unschedule", task),
+		);
+		await ctx.answerCbQuery("Task selected.");
+	});
+});
+
+this.bot.action(new RegExp(`^${SCHEDULED_TASK_RUN_SELECT_CALLBACK_PREFIX}([a-f0-9]+)$`), async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		const task = requireScheduledTaskSelection(await this.scheduler.listTasks(), ctx.match[1]);
+		await ctx.editMessageText(
+			formatScheduledTaskActionConfirmationText(task, "runscheduled"),
+			buildScheduledTaskConfirmationKeyboard("runscheduled", task),
+		);
+		await ctx.answerCbQuery("Task selected.");
+	});
+});
+
+this.bot.action(new RegExp(`^${SCHEDULED_TASK_UNSCHEDULE_CONFIRM_CALLBACK_PREFIX}([a-f0-9]+)$`), async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		const task = requireScheduledTaskSelection(await this.scheduler.listTasks(), ctx.match[1]);
+		const callbackMessage = ctx.callbackQuery.message;
+		const chatId = callbackMessage?.chat.id;
+		const messageId = callbackMessage?.message_id;
+		if (chatId === undefined || !messageId) {
+			throw new Error("Could not continue the scheduled task flow.");
+		}
+
+		await this.dismissInlineKeyboard(chatId, messageId);
+		await ctx.answerCbQuery("Scheduled task deleted.");
+		await ctx.reply(formatScheduledTaskDeletedText(await this.scheduler.deleteTaskByReference(task.id)));
+	});
+});
+
+this.bot.action(new RegExp(`^${SCHEDULED_TASK_RUN_CONFIRM_CALLBACK_PREFIX}([a-f0-9]+)$`), async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		const task = requireScheduledTaskSelection(await this.scheduler.listTasks(), ctx.match[1]);
+		const callbackMessage = ctx.callbackQuery.message;
+		const chatId = callbackMessage?.chat.id;
+		const messageId = callbackMessage?.message_id;
+		if (chatId === undefined || !messageId) {
+			throw new Error("Could not continue the scheduled task flow.");
+		}
+
+		await this.dismissInlineKeyboard(chatId, messageId);
+		const result = await this.scheduler.runTaskNowByReference(task.id);
+		await ctx.answerCbQuery("Scheduled task queued.");
+		await ctx.reply(formatScheduledTaskRunQueuedText(result.task, result.delayedByBusy));
+	});
+});
+
+this.bot.action(new RegExp(`^${SESSION_SELECTION_PAGE_CALLBACK_PREFIX}(\\d+)$`), async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		const pageIndex = parseSessionSelectionPageIndex(ctx.match[1]);
+		const sessions = await this.coordinator.listSessions();
+		const popup = buildSessionSelectionPopup(sessions, pageIndex);
+		if (popup.keyboard) {
+			await ctx.editMessageText(popup.text, popup.keyboard);
+		} else {
+			await ctx.editMessageText(popup.text);
+		}
+		await ctx.answerCbQuery();
+	});
+});
 
 		this.bot.action(SESSION_SELECTION_CANCEL_CALLBACK_DATA, async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
@@ -269,6 +473,120 @@ export class TelegramBotApp {
 					this.pendingRename = undefined;
 				}
 				await dismissSessionSelectionKeyboard(ctx);
+			});
+		});
+
+		this.bot.action(SCHEDULE_TARGET_NEW_CALLBACK_DATA, async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				const pendingSchedule = this.pendingSchedule;
+				if (!pendingSchedule || pendingSchedule.step !== "target") {
+					await ctx.answerCbQuery("No pending schedule target selection.");
+					return;
+				}
+
+				const callbackMessage = ctx.callbackQuery.message;
+				const messageId = callbackMessage?.message_id;
+				const chatId = callbackMessage?.chat.id;
+				if (!messageId || chatId === undefined || messageId !== pendingSchedule.promptMessageId) {
+					throw new Error("Could not continue the schedule flow.");
+				}
+
+				await this.dismissInlineKeyboard(chatId, pendingSchedule.promptMessageId);
+				const promptMessage = await ctx.reply(
+					formatScheduleWhenPromptText(getServerTimezone()),
+					buildScheduleCancelKeyboard(),
+				);
+				this.pendingSchedule = {
+					step: "when",
+					promptMessageId: promptMessage.message_id,
+					target: { type: "new_session" },
+				};
+				await ctx.answerCbQuery("Target selected.");
+			});
+		});
+
+		this.bot.action(SCHEDULE_TARGET_CURRENT_CALLBACK_DATA, async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				const pendingSchedule = this.pendingSchedule;
+				if (!pendingSchedule || pendingSchedule.step !== "target") {
+					await ctx.answerCbQuery("No pending schedule target selection.");
+					return;
+				}
+
+				const callbackMessage = ctx.callbackQuery.message;
+				const messageId = callbackMessage?.message_id;
+				const chatId = callbackMessage?.chat.id;
+				if (!messageId || chatId === undefined || messageId !== pendingSchedule.promptMessageId) {
+					throw new Error("Could not continue the schedule flow.");
+				}
+
+				const currentSession = await this.coordinator.getCurrentSession();
+				if (!currentSession) {
+					throw new NoSelectedSessionError();
+				}
+
+				await this.dismissInlineKeyboard(chatId, pendingSchedule.promptMessageId);
+				const promptMessage = await ctx.reply(
+					formatScheduleWhenPromptText(getServerTimezone()),
+					buildScheduleCancelKeyboard(),
+				);
+				this.pendingSchedule = {
+					step: "when",
+					promptMessageId: promptMessage.message_id,
+					target: toExistingSessionScheduledTaskTarget(currentSession),
+				};
+				await ctx.answerCbQuery("Target selected.");
+			});
+		});
+
+		this.bot.action(SCHEDULE_CONFIRM_CALLBACK_DATA, async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				const pendingSchedule = this.pendingSchedule;
+				if (!pendingSchedule || pendingSchedule.step !== "confirm") {
+					await ctx.answerCbQuery("No pending schedule confirmation.");
+					return;
+				}
+
+				const { refreshedSchedule, changed } = doesParsedScheduleRequireConfirmationRefresh(
+					pendingSchedule.schedule,
+					new Date(),
+				);
+				const existingConfirmationText = formatScheduleConfirmationText(pendingSchedule.schedule);
+const refreshedConfirmationText = formatScheduleConfirmationText(refreshedSchedule);
+const confirmationKeyboard = buildScheduleConfirmationKeyboard();
+if (changed && refreshedConfirmationText !== existingConfirmationText) {
+	this.pendingSchedule = {
+		...pendingSchedule,
+		schedule: refreshedSchedule,
+	};
+	await ctx.editMessageText(refreshedConfirmationText, confirmationKeyboard);
+	await ctx.answerCbQuery("Schedule updated to the current confirmation time. Confirm again.");
+	return;
+}
+
+				const callbackMessage = ctx.callbackQuery.message;
+				const chatId = callbackMessage?.chat.id;
+				if (chatId === undefined) {
+					throw new Error("Could not continue the schedule flow.");
+				}
+
+				await this.dismissInlineKeyboard(chatId, pendingSchedule.promptMessageId);
+				const promptMessage = await ctx.reply(formatSchedulePromptText(), buildScheduleCancelKeyboard());
+				this.pendingSchedule = {
+					...pendingSchedule,
+					step: "prompt",
+					promptMessageId: promptMessage.message_id,
+					schedule: refreshedSchedule,
+				};
+				await ctx.answerCbQuery("Schedule confirmed.");
+			});
+		});
+
+		this.bot.action(SCHEDULE_CANCEL_CALLBACK_DATA, async (ctx) => {
+			await this.runWithErrorHandling(ctx, async () => {
+				this.pendingSchedule = undefined;
+				await dismissSessionSelectionKeyboard(ctx);
+				await ctx.reply("Schedule canceled.");
 			});
 		});
 
@@ -321,13 +639,51 @@ export class TelegramBotApp {
 				return;
 			}
 
+			if (this.pendingSchedule) {
+				await this.runWithErrorHandling(ctx, async () => {
+					const pendingSchedule = this.pendingSchedule;
+					if (!pendingSchedule) {
+						return;
+					}
+
+					if (isCancelText(text)) {
+						this.pendingSchedule = undefined;
+						await this.dismissInlineKeyboard(ctx.chat.id, pendingSchedule.promptMessageId);
+						await ctx.reply("Schedule canceled.");
+						return;
+					}
+
+					if (pendingSchedule.step === "target") {
+						await ctx.reply(formatScheduleTargetGuidanceText());
+						return;
+					}
+
+					if (pendingSchedule.step === "when") { const parsed = await this.scheduleInputParser.parse(rawText, new Date(), getServerTimezone()); await this.dismissInlineKeyboard(ctx.chat.id, pendingSchedule.promptMessageId); const promptMessage = await ctx.reply( formatScheduleConfirmationText(parsed), buildScheduleConfirmationKeyboard(), ); this.pendingSchedule = { step: "confirm", promptMessageId: promptMessage.message_id, target: pendingSchedule.target, schedule: parsed, }; return; }
+
+					if (pendingSchedule.step === "prompt") {
+						const task = await this.scheduler.createTask({
+							schedule: pendingSchedule.schedule,
+							prompt: rawText,
+							target: pendingSchedule.target,
+						});
+						this.pendingSchedule = undefined;
+						await this.dismissInlineKeyboard(ctx.chat.id, pendingSchedule.promptMessageId);
+						await ctx.reply(formatScheduledTaskCreatedText(task));
+						return;
+					}
+
+					await ctx.reply(formatScheduleAwaitingConfirmationText());
+				});
+				return;
+			}
+
 			if (this.pendingRename) {
 				await this.runWithErrorHandling(ctx, async () => {
 					const pendingRename = this.pendingRename;
 					const session = await this.coordinator.renameCurrentSession(rawText);
 					this.pendingRename = undefined;
 					if (pendingRename) {
-						await this.dismissPendingRenameKeyboard(ctx.chat.id, pendingRename.promptMessageId);
+						await this.dismissInlineKeyboard(ctx.chat.id, pendingRename.promptMessageId);
 					}
 					await ctx.reply(formatRenameConfirmationText(session.name ?? rawText.trim()));
 				});
@@ -374,7 +730,7 @@ export class TelegramBotApp {
 		return ctx.chat?.type === "private" && ctx.from?.id === this.config.authorizedTelegramUserId;
 	}
 
-	private async dismissPendingRenameKeyboard(chatId: number, messageId: number): Promise<void> {
+	private async dismissInlineKeyboard(chatId: number, messageId: number): Promise<void> {
 		try {
 			await this.bot.telegram.editMessageReplyMarkup(chatId, messageId, undefined, undefined);
 		} catch {
@@ -392,6 +748,208 @@ export class TelegramBotApp {
 			await ctx.reply(formatUserFacingError(error));
 		}
 	}
+}
+
+export interface TelegramBotApp {
+	pendingSchedule: PendingScheduleState | undefined;
+}
+
+function buildScheduleTargetKeyboard() {
+	return Markup.inlineKeyboard([
+		[Markup.button.callback("new session", SCHEDULE_TARGET_NEW_CALLBACK_DATA)],
+		[Markup.button.callback("current session", SCHEDULE_TARGET_CURRENT_CALLBACK_DATA)],
+		[Markup.button.callback("cancel", SCHEDULE_CANCEL_CALLBACK_DATA)],
+	]);
+}
+
+function buildScheduleCancelKeyboard() {
+	return Markup.inlineKeyboard([[Markup.button.callback("cancel", SCHEDULE_CANCEL_CALLBACK_DATA)]]);
+}
+
+function buildScheduleConfirmationKeyboard() {
+	return Markup.inlineKeyboard([
+		[Markup.button.callback("confirm", SCHEDULE_CONFIRM_CALLBACK_DATA)],
+		[Markup.button.callback("cancel", SCHEDULE_CANCEL_CALLBACK_DATA)],
+	]);
+}
+
+function isCancelText(text: string): boolean {
+	return text.trim().toLowerCase() === "cancel";
+}
+
+function parseSingleValueCommandArgument(text: string): string | undefined {
+	const argument = getCommandArgumentText(text).trim();
+	return argument.length > 0 ? argument : undefined;
+}
+
+function getCommandArgumentText(text: string): string {
+	const firstSpaceIndex = text.indexOf(" ");
+	return firstSpaceIndex === -1 ? "" : text.slice(firstSpaceIndex + 1);
+}
+
+function toExistingSessionScheduledTaskTarget(session: SessionCatalogEntry) {
+	return {
+		type: "existing_session" as const,
+		sessionPath: session.path,
+		sessionId: session.id,
+		sessionName: session.name,
+	};
+}
+
+function toScheduledTaskMenuAction(value: string | undefined): ScheduledTaskMenuAction {
+	return value === "runscheduled" ? "runscheduled" : "unschedule";
+}
+
+function buildScheduledTaskSelectionKeyboard(tasks: ScheduledTask[], action: ScheduledTaskMenuAction, pageIndex = 0) {
+	if (tasks.length === 0) {
+		return undefined;
+	}
+
+	const pageCount = getScheduledTaskSelectionPageCount(tasks.length);
+	const normalizedPageIndex = normalizeScheduledTaskSelectionPageIndex(pageIndex, tasks.length);
+	const pageTasks = getScheduledTaskSelectionPageTasks(tasks, normalizedPageIndex);
+	const rows = pageTasks.map((task) => [
+		Markup.button.callback(
+			buildScheduledTaskButtonLabel(task),
+			`${getScheduledTaskSelectionCallbackPrefix(action)}${createScheduledTaskSelectionToken(task)}`,
+		),
+	]);
+	const navigationRow = buildScheduledTaskSelectionNavigationRow(action, normalizedPageIndex, pageCount);
+	if (navigationRow) {
+		rows.push(navigationRow);
+	}
+	rows.push([Markup.button.callback("cancel", SCHEDULED_TASK_SELECTION_CANCEL_CALLBACK_DATA)]);
+
+	return Markup.inlineKeyboard(rows);
+}
+
+function buildScheduledTaskConfirmationKeyboard(action: ScheduledTaskMenuAction, task: ScheduledTask) {
+	return Markup.inlineKeyboard([
+		[
+			Markup.button.callback(
+				"confirm",
+				`${getScheduledTaskConfirmationCallbackPrefix(action)}${createScheduledTaskSelectionToken(task)}`,
+			),
+		],
+		[Markup.button.callback("cancel", SCHEDULED_TASK_SELECTION_CANCEL_CALLBACK_DATA)],
+	]);
+}
+
+function buildScheduledTaskSelectionPopup(tasks: ScheduledTask[], action: ScheduledTaskMenuAction, pageIndex = 0): {
+	text: string;
+	keyboard: ReturnType<typeof buildScheduledTaskSelectionKeyboard> | undefined;
+} {
+	if (tasks.length === 0) {
+		return {
+			text: formatScheduledTaskSelectionText(tasks, { action }),
+			keyboard: undefined,
+		};
+	}
+
+	const normalizedPageIndex = normalizeScheduledTaskSelectionPageIndex(pageIndex, tasks.length);
+	const pageTasks = getScheduledTaskSelectionPageTasks(tasks, normalizedPageIndex);
+	return {
+		text: formatScheduledTaskSelectionText(pageTasks, {
+			action,
+			pageIndex: normalizedPageIndex,
+			pageCount: getScheduledTaskSelectionPageCount(tasks.length),
+			pageStartIndex: normalizedPageIndex * SCHEDULED_TASK_SELECTION_PAGE_SIZE,
+		}),
+		keyboard: buildScheduledTaskSelectionKeyboard(tasks, action, normalizedPageIndex),
+	};
+}
+
+function getScheduledTaskSelectionPageTasks(tasks: ScheduledTask[], pageIndex: number): ScheduledTask[] {
+	const startIndex = pageIndex * SCHEDULED_TASK_SELECTION_PAGE_SIZE;
+	return tasks.slice(startIndex, startIndex + SCHEDULED_TASK_SELECTION_PAGE_SIZE);
+}
+
+function getScheduledTaskSelectionPageCount(taskCount: number): number {
+	return Math.max(1, Math.ceil(taskCount / SCHEDULED_TASK_SELECTION_PAGE_SIZE));
+}
+
+function normalizeScheduledTaskSelectionPageIndex(pageIndex: number, taskCount: number): number {
+	if (!Number.isFinite(pageIndex) || pageIndex <= 0) {
+		return 0;
+	}
+
+	return Math.min(Math.trunc(pageIndex), getScheduledTaskSelectionPageCount(taskCount) - 1);
+}
+
+function buildScheduledTaskSelectionNavigationRow(
+	action: ScheduledTaskMenuAction,
+	pageIndex: number,
+	pageCount: number,
+) {
+	if (pageCount <= 1) {
+		return undefined;
+	}
+
+	const buttons = [];
+	if (pageIndex > 0) {
+		buttons.push(
+			Markup.button.callback(
+				"Last page",
+				`${SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX}${action}:${pageIndex - 1}`,
+			),
+		);
+	}
+	if (pageIndex < pageCount - 1) {
+		buttons.push(
+			Markup.button.callback(
+				"Next page",
+				`${SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX}${action}:${pageIndex + 1}`,
+			),
+		);
+	}
+
+	return buttons.length > 0 ? buttons : undefined;
+}
+
+function parseScheduledTaskSelectionPageIndex(value: string | undefined): number {
+	if (!value) {
+		return 0;
+	}
+
+	const pageIndex = Number.parseInt(value, 10);
+	return Number.isNaN(pageIndex) ? 0 : pageIndex;
+}
+
+function buildScheduledTaskButtonLabel(task: ScheduledTask): string {
+	return `${task.id} | ${task.prompt}`.slice(0, 60);
+}
+
+function getScheduledTaskSelectionCallbackPrefix(action: ScheduledTaskMenuAction): string {
+	return action === "runscheduled"
+		? SCHEDULED_TASK_RUN_SELECT_CALLBACK_PREFIX
+		: SCHEDULED_TASK_UNSCHEDULE_SELECT_CALLBACK_PREFIX;
+}
+
+function getScheduledTaskConfirmationCallbackPrefix(action: ScheduledTaskMenuAction): string {
+	return action === "runscheduled"
+		? SCHEDULED_TASK_RUN_CONFIRM_CALLBACK_PREFIX
+		: SCHEDULED_TASK_UNSCHEDULE_CONFIRM_CALLBACK_PREFIX;
+}
+
+function createScheduledTaskSelectionToken(task: ScheduledTask): string {
+	return createHash("sha256").update(task.id).digest("hex").slice(0, 12);
+}
+
+function resolveScheduledTaskSelection(tasks: ScheduledTask[], selectionToken: string | undefined): ScheduledTask | undefined {
+	if (!selectionToken) {
+		return undefined;
+	}
+
+	return tasks.find((task) => createScheduledTaskSelectionToken(task) === selectionToken);
+}
+
+function requireScheduledTaskSelection(tasks: ScheduledTask[], selectionToken: string | undefined): ScheduledTask {
+	const task = resolveScheduledTaskSelection(tasks, selectionToken);
+	if (!task) {
+		throw new Error("That scheduled task is no longer available. Reopen the command and try again.");
+	}
+
+	return task;
 }
 
 export function buildSessionKeyboard(sessions: SessionCatalogEntry[], pageIndex = 0) {

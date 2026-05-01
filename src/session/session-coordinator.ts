@@ -6,7 +6,15 @@ import type {
 	PiRuntimePort,
 	SessionInfoRecord,
 } from "../pi/pi-types.js";
-import type { AppStateStore, StoredRecentModel, StoredSelectedSession } from "../state/app-state.js";
+import type {
+	ScheduledPromptRunRequest,
+	ScheduledPromptRunResult,
+} from "../scheduler/scheduled-task-service.js";
+import type {
+	AppStateStore,
+	StoredRecentModel,
+	StoredSelectedSession,
+} from "../state/app-state.js";
 import {
 	AmbiguousSessionReferenceError,
 	BusySessionError,
@@ -237,8 +245,12 @@ export class SessionCoordinator {
 		}
 		return this.switchSession(session.path);
 	}
-
 	async switchSessionByReference(reference: string): Promise<SessionCatalogEntry> {
+		const session = await this.resolveSessionReference(reference);
+		return this.switchSession(session.path);
+	}
+
+	async resolveSessionReference(reference: string): Promise<SessionCatalogEntry> {
 		const normalizedReference = reference.trim();
 		if (normalizedReference.length === 0) {
 			throw new SessionNotFoundError(reference);
@@ -249,7 +261,7 @@ export class SessionCoordinator {
 			(session) => session.id === normalizedReference || session.path === normalizedReference,
 		);
 		if (exactMatch) {
-			return this.switchSession(exactMatch.path);
+			return exactMatch;
 		}
 
 		const prefixMatches = sessions.filter((session) => session.id.startsWith(normalizedReference));
@@ -258,7 +270,7 @@ export class SessionCoordinator {
 			if (!match) {
 				throw new SessionNotFoundError(normalizedReference);
 			}
-			return this.switchSession(match.path);
+			return match;
 		}
 		if (prefixMatches.length > 1) {
 			throw new AmbiguousSessionReferenceError(
@@ -269,7 +281,6 @@ export class SessionCoordinator {
 
 		throw new SessionNotFoundError(normalizedReference);
 	}
-
 	async setCurrentSessionModel(model: PiModelDescriptor): Promise<SessionCatalogEntry> {
 		this.assertIdle();
 
@@ -412,9 +423,56 @@ export class SessionCoordinator {
 		await this.runtime.session.abort();
 		return true;
 	}
-
 	isBusy(): boolean {
 		return this.activeRun !== undefined;
+	}
+
+	async runScheduledPrompt(request: ScheduledPromptRunRequest): Promise<ScheduledPromptRunResult> {
+		this.assertIdle();
+		const runtime = await this.runtimeFactory.createRuntime({
+			workspacePath: this.workspacePath,
+			...(request.target.type === "existing_session"
+				? { selectedSessionPath: request.target.sessionPath }
+				: {}),
+		});
+		let unsubscribeAssistantEvents: (() => void) | undefined;
+		let lastAssistantText = "";
+		let finalDelivered = false;
+
+		try {
+			const sessionPath = runtime.session.sessionFile;
+			if (!sessionPath) {
+				throw new Error("Pi runtime created a non-persistent session, which is not supported by this bot.");
+			}
+
+			unsubscribeAssistantEvents = runtime.session.subscribe((event) => {
+				if (!isAssistantMessageEvent(event)) {
+					return;
+				}
+
+				lastAssistantText = extractMessageText(event.message);
+				if (event.type === "message_end") {
+					finalDelivered = true;
+				}
+			});
+
+			await runtime.session.sendUserMessage(request.prompt);
+			if (!finalDelivered && lastAssistantText.length === 0) {
+				lastAssistantText = "";
+			}
+
+			return {
+				sessionPath,
+				sessionId: runtime.session.sessionId,
+				sessionName: runtime.session.sessionName,
+				assistantText: lastAssistantText,
+				activeModel: runtime.session.activeModel,
+				target: request.target,
+			};
+		} finally {
+			unsubscribeAssistantEvents?.();
+			await runtime.dispose();
+		}
 	}
 
 	async dispose(): Promise<void> {
@@ -425,7 +483,6 @@ export class SessionCoordinator {
 			this.runtime = undefined;
 		}
 	}
-
 	addActiveSessionObserver(observer: ActiveSessionObserver): () => void {
 		this.activeSessionObservers.add(observer);
 		return () => {

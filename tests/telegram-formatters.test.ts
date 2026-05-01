@@ -9,6 +9,14 @@ import {
 	formatNoAvailableModelsText,
 	formatNoSelectedSessionText,
 	formatRenamePromptText,
+	formatScheduledTaskActionConfirmationText,
+	formatScheduledTaskCreatedText,
+	formatScheduledTaskDelayText,
+	formatScheduledTaskDeletedText,
+	formatScheduledTaskResultText,
+	formatScheduledTaskRunQueuedText,
+	formatScheduledTaskSelectionText,
+	formatScheduledTasksText,
 } from "../src/telegram/telegram-formatters.js";
 
 describe("formatNewSessionText", () => {
@@ -157,6 +165,92 @@ describe("model selection formatters", () => {
 	});
 });
 
+describe("scheduled task formatters", () => {
+	it("formats creation, listing, deletion, delay, and run-queue messages", () => {
+		const task = createScheduledTask();
+
+		expect(formatScheduledTaskCreatedText(task)).toBe(
+			"Scheduled task task-2026 created.\nSchedule: One time at 2026-05-01 3:00PM UTC\nNext run: 2026-05-01 3:00PM UTC\nTarget: new session\nPrompt: Summarize the overnight repo changes",
+		);
+		expect(formatScheduledTasksText([task])).toBe(
+			"Scheduled tasks:\ntask-202 | 2026-05-01 3:00PM UTC | new session\n  One time at 2026-05-01 3:00PM UTC\n  Summarize the overnight repo changes",
+		);
+		expect(formatScheduledTaskDeletedText(task)).toBe("Deleted scheduled task task-202.");
+		expect(formatScheduledTaskRunQueuedText(task, false)).toBe("Scheduled task task-202 queued to run now.");
+		expect(
+			formatScheduledTaskRunQueuedText(
+				{ ...task, nextRunAt: "2026-05-01T15:01:00.000Z" },
+				true,
+			),
+		).toBe(
+			"Scheduled task task-202 will retry at 2026-05-01 3:01PM UTC because a foreground run is active.",
+		);
+		expect(
+			formatScheduledTaskDelayText({
+				task: { ...task, nextRunAt: "2026-05-01T15:01:00.000Z" },
+				retryCount: 5,
+				nextRetryAt: "2026-05-01T15:01:00.000Z",
+			}),
+		).toBe(
+			"Still waiting after 5 busy delays. Scheduled task task-202 will retry at 2026-05-01 3:01PM UTC.",
+		);
+	});
+
+	it("formats scheduled task picker and confirmation text for interactive menus", () => {
+		const task = createScheduledTask();
+
+		expect(
+			formatScheduledTaskSelectionText([task], {
+				action: "unschedule",
+				pageIndex: 1,
+				pageCount: 3,
+				pageStartIndex: 5,
+			}),
+		).toBe(
+			"Select a scheduled task to delete (page 2/3):\n6. task-2026 | 2026-05-01 3:00PM UTC\n   Summarize the overnight repo changes\n\nTap a button below to continue or cancel.",
+		);
+		expect(formatScheduledTaskSelectionText([], { action: "runscheduled" })).toBe("No scheduled tasks.");
+		expect(formatScheduledTaskActionConfirmationText(task, "runscheduled")).toBe(
+			"Run this scheduled task now?\nTask ID: task-2026\nSchedule: One time at 2026-05-01 3:00PM UTC\nNext run: 2026-05-01 3:00PM UTC\nTarget: new session\nPrompt: Summarize the overnight repo changes\nTap confirm to continue, or cancel.",
+		);
+	});
+
+	it("formats concise scheduled task success and failure summaries", () => {
+		const task = createScheduledTask({
+			target: {
+				type: "existing_session",
+				sessionPath: "/workspace/existing.jsonl",
+				sessionId: "session-42",
+				sessionName: "Morning Review",
+			},
+		});
+
+		expect(
+			formatScheduledTaskResultText({
+				task,
+				result: {
+					sessionPath: "/workspace/existing.jsonl",
+					sessionId: "session-42",
+					sessionName: "Morning Review",
+					assistantText: "Done.",
+					activeModel: undefined,
+					target: task.target,
+				},
+			}),
+		).toBe(
+			"Scheduled task task-202 completed.\nTarget: existing session session-4 (Morning Review)\nSession: session-4 (Morning Review)\nReply: Done.",
+		);
+		expect(
+			formatScheduledTaskResultText({
+				task,
+				errorMessage: "Pi runtime unavailable",
+			}),
+		).toBe(
+			"Scheduled task task-202 failed.\nTarget: existing session session-4 (Morning Review)\nError: Pi runtime unavailable",
+		);
+	});
+});
+
 function createSession(overrides: {
 	created: Date;
 	cwd: string;
@@ -180,6 +274,28 @@ function createSession(overrides: {
 		allMessagesText: "",
 		isSelected: true,
 		source: "pi",
+	};
+}
+
+function createScheduledTask(overrides?: Record<string, unknown>) {
+	return {
+		id: "task-2026",
+		kind: "one_time" as const,
+		prompt: "Summarize the overnight repo changes",
+		createdAt: "2026-05-01T14:00:00.000Z",
+		updatedAt: "2026-05-01T14:00:00.000Z",
+		nextRunAt: "2026-05-01T15:00:00.000Z",
+		scheduledForAt: "2026-05-01T15:00:00.000Z",
+		busyRetryCount: 0,
+		target: { type: "new_session" as const },
+		schedule: {
+			kind: "one_time" as const,
+			input: "2026-05-01 3:00pm",
+			normalizedText: "One time at 2026-05-01 3:00PM UTC",
+			timezone: "UTC",
+			runAt: "2026-05-01T15:00:00.000Z",
+		},
+		...overrides,
 	};
 }
 

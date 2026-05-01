@@ -154,7 +154,6 @@ class InMemoryAppStateStore implements AppStateStore {
 			botOwnedSessionPin: undefined,
 		};
 	}
-
 	async saveModelRecency(
 		workspacePath: string,
 		modelRecency: NonNullable<AppState["modelRecency"]>,
@@ -163,6 +162,17 @@ class InMemoryAppStateStore implements AppStateStore {
 		this.state = {
 			...state,
 			modelRecency,
+		};
+	}
+
+	async saveScheduledTasks(
+		workspacePath: string,
+		scheduledTasks: NonNullable<AppState["scheduledTasks"]>,
+	): Promise<void> {
+		const state = await this.load(workspacePath);
+		this.state = {
+			...state,
+			scheduledTasks,
 		};
 	}
 }

@@ -168,6 +168,7 @@ function createAppStateStoreStub(): AppStateStore {
 	let selectedSession: StoredSelectedSession | undefined;
 	let botOwnedSessionPin: StoredBotOwnedSessionPin | undefined;
 	let modelRecency = createEmptyAppState("/workspace").modelRecency;
+	let scheduledTasks = createEmptyAppState("/workspace").scheduledTasks;
 
 	return {
 		load: async (workspacePath: string) => ({
@@ -175,6 +176,7 @@ function createAppStateStoreStub(): AppStateStore {
 			selectedSession,
 			botOwnedSessionPin,
 			modelRecency,
+			scheduledTasks,
 		}),
 		saveSelectedSession: async (_workspacePath: string, nextSelectedSession: StoredSelectedSession) => {
 			selectedSession = nextSelectedSession;
@@ -190,6 +192,9 @@ function createAppStateStoreStub(): AppStateStore {
 		},
 		saveModelRecency: async (_workspacePath: string, nextModelRecency) => {
 			modelRecency = nextModelRecency;
+		},
+		saveScheduledTasks: async (_workspacePath: string, nextScheduledTasks) => {
+			scheduledTasks = nextScheduledTasks;
 		},
 	};
 }

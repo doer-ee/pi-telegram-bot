@@ -14,6 +14,7 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 import { DEFAULT_TITLE_REFINEMENT_MODEL } from "../config/title-refinement-model.js";
 import { ModelNotAvailableError } from "./pi-errors.js";
 import type {
+	BackgroundAssistantPromptRequest,
 	PiModelDescriptor,
 	PiRuntimeFactory,
 	PiRuntimePort,
@@ -141,6 +142,60 @@ export class PiSdkRuntimeFactory implements PiRuntimeFactory {
 				finalTitle: request.heuristicTitle,
 			});
 			throw error;
+		}
+	}
+
+	async runBackgroundAssistantPrompt(request: BackgroundAssistantPromptRequest): Promise<string | undefined> {
+		const services = await createAgentSessionServices({
+			cwd: request.workspacePath,
+			agentDir: this.agentDir,
+		});
+		throwOnDiagnosticErrors(services.diagnostics);
+		logDiagnosticWarnings(services.diagnostics);
+		const model = resolveConfiguredTitleRefinementModel(
+			services.modelRegistry,
+			this.titleRefinementModel,
+		);
+
+		const { session } = await createAgentSessionFromServices({
+			services,
+			sessionManager: SessionManager.inMemory(request.workspacePath),
+			model,
+			thinkingLevel: "low",
+			noTools: "all",
+		});
+
+		let timedOut = false;
+		let timeoutHandle: NodeJS.Timeout | undefined;
+
+		const promptPromise = (async () => {
+			await session.bindExtensions({});
+			await session.sendUserMessage(request.prompt);
+			return session.getLastAssistantText()?.trim();
+		})();
+
+		const observedPromptPromise = promptPromise.catch((error: unknown) => {
+			if (timedOut) {
+				return undefined;
+			}
+			throw error;
+		});
+
+		const timeoutPromise = new Promise<string | undefined>((resolve) => {
+			timeoutHandle = setTimeout(() => {
+				timedOut = true;
+				void session.abort().catch(() => undefined);
+				resolve(undefined);
+			}, request.timeoutMs);
+		});
+
+		try {
+			return await Promise.race([observedPromptPromise, timeoutPromise]);
+		} finally {
+			if (timeoutHandle) {
+				clearTimeout(timeoutHandle);
+			}
+			safeDisposeAssistantSession(session);
 		}
 	}
 }
@@ -429,5 +484,13 @@ function logDiagnosticWarnings(diagnostics: readonly AgentSessionRuntimeDiagnost
 		if (diagnostic.type === "warning") {
 			console.warn(`[pi-telegram-bot] ${diagnostic.message}`);
 		}
+	}
+}
+
+function safeDisposeAssistantSession(session: { dispose(): void }): void {
+	try {
+		session.dispose();
+	} catch {
+		return;
 	}
 }

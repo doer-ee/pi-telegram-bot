@@ -18,7 +18,12 @@ import {
 	NoSelectedSessionError,
 	SessionNotFoundError,
 } from "../src/session/session-errors.js";
-import { type ActiveSessionInfo, SessionCoordinator } from "../src/session/session-coordinator.js";
+import { parseScheduleInput } from "../src/scheduler/schedule-parser.js";
+import { ScheduledTaskRuntime } from "../src/scheduler/scheduled-task-runtime.js";
+import {
+	type ActiveSessionInfo,
+	SessionCoordinator,
+} from "../src/session/session-coordinator.js";
 import { FileAppStateStore } from "../src/state/file-app-state-store.js";
 
 describe("SessionCoordinator", () => {
@@ -764,6 +769,160 @@ describe("SessionCoordinator", () => {
 			);
 			await expect(coordinator.switchSessionByReference("missing")).rejects.toBeInstanceOf(SessionNotFoundError);
 		});
+	});
+});
+
+describe("scheduled prompts", () => {
+		it("run in isolated Pi runtimes so the selected foreground session stays unchanged", async () => {
+		const localTempDir = await mkdtemp(join(tmpdir(), "pi-telegram-bot-scheduler-"));
+		const localWorkspacePath = join(localTempDir, "workspace");
+		const localStatePath = join(localTempDir, "state.json");
+		await mkdir(localWorkspacePath, { recursive: true });
+		try {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const coordinator = new SessionCoordinator(
+				localWorkspacePath,
+				new FileAppStateStore(localStatePath),
+				runtimeFactory,
+			);
+
+			await coordinator.initialize();
+			const selectedSession = await coordinator.createNewSession();
+			await coordinator.sendPrompt("foreground prompt");
+			const existingTarget = await coordinator.createNewSession();
+			await coordinator.sendPrompt("existing target prompt");
+			await coordinator.switchSession(selectedSession.path);
+
+			const newSessionResult = await coordinator.runScheduledPrompt({
+				prompt: "scheduled fresh prompt",
+				target: { type: "new_session" },
+			});
+			const existingSessionResult = await coordinator.runScheduledPrompt({
+				prompt: "scheduled existing prompt",
+				target: {
+					type: "existing_session",
+					sessionPath: existingTarget.path,
+					sessionId: existingTarget.id,
+					sessionName: existingTarget.name,
+				},
+			});
+
+			expect((await coordinator.getCurrentSession())?.path).toBe(selectedSession.path);
+			expect(newSessionResult.sessionPath).not.toBe(selectedSession.path);
+			expect(runtimeFactory.getSession(newSessionResult.sessionPath)?.messages).toEqual(["scheduled fresh prompt"]);
+			expect(runtimeFactory.getSession(existingTarget.path)?.messages).toEqual([
+				"existing target prompt",
+				"scheduled existing prompt",
+			]);
+			expect(existingSessionResult.sessionPath).toBe(existingTarget.path);
+		} finally {
+			await rm(localTempDir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("ScheduledTaskRuntime", () => {
+		it("persists tasks, delays exactly one minute while a foreground run is active, and retries once idle", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-05-01T15:00:00.000Z"));
+		const localTempDir = await mkdtemp(join(tmpdir(), "pi-telegram-bot-scheduler-"));
+		const localWorkspacePath = join(localTempDir, "workspace");
+		const localStatePath = join(localTempDir, "state.json");
+		await mkdir(localWorkspacePath, { recursive: true });
+		let scheduler: ScheduledTaskRuntime | undefined;
+		try {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const stateStore = new FileAppStateStore(localStatePath);
+			const coordinator = new SessionCoordinator(localWorkspacePath, stateStore, runtimeFactory);
+			const delayedEvents: string[] = [];
+			const completedSessions: string[] = [];
+			scheduler = new ScheduledTaskRuntime(localWorkspacePath, stateStore, coordinator, {
+				onDelayed: async (event) => {
+					delayedEvents.push(event.nextRetryAt);
+				},
+				onCompleted: async (event) => {
+					if (event.result) {
+						completedSessions.push(event.result.sessionPath);
+					}
+				},
+			});
+
+			await coordinator.initialize();
+			const session = await coordinator.createNewSession();
+			runtimeFactory.getSession(session.path)?.pauseNextPrompt();
+			const activePrompt = coordinator.sendPrompt("long running prompt");
+
+			await scheduler.start();
+			const task = await scheduler.createTask({
+				schedule: parseScheduleInput("2026-05-01 3:00pm", new Date("2026-04-30T15:00:00.000Z"), "UTC"),
+				prompt: "scheduled while busy",
+				target: { type: "new_session" },
+			});
+			await vi.runOnlyPendingTimersAsync();
+			await scheduler.waitForInFlightOperations();
+
+			const delayedTask = (await scheduler.listTasks())[0];
+			expect(task.id).toBe(delayedTask?.id);
+			expect(delayedTask?.nextRunAt).toBe("2026-05-01T15:01:00.000Z");
+			expect((await stateStore.load(localWorkspacePath)).scheduledTasks?.[0]?.nextRunAt).toBe("2026-05-01T15:01:00.000Z");
+			expect(delayedEvents).toEqual(["2026-05-01T15:01:00.000Z"]);
+
+			await coordinator.abortActiveRun();
+			await activePrompt;
+			await vi.advanceTimersByTimeAsync(60_000);
+			await scheduler.waitForInFlightOperations();
+
+			expect(await scheduler.listTasks()).toEqual([]);
+			expect(completedSessions).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+			await scheduler?.stop();
+			await rm(localTempDir, { recursive: true, force: true });
+		}
+	});
+
+		it("restores overdue one-time tasks on startup and runs them once", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-05-01T15:00:00.000Z"));
+		const localTempDir = await mkdtemp(join(tmpdir(), "pi-telegram-bot-scheduler-"));
+		const localWorkspacePath = join(localTempDir, "workspace");
+		const localStatePath = join(localTempDir, "state.json");
+		await mkdir(localWorkspacePath, { recursive: true });
+		let restoredScheduler: ScheduledTaskRuntime | undefined;
+		try {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const stateStore = new FileAppStateStore(localStatePath);
+			const coordinator = new SessionCoordinator(localWorkspacePath, stateStore, runtimeFactory);
+			const completedPrompts: string[] = [];
+
+			await coordinator.initialize();
+			const firstScheduler = new ScheduledTaskRuntime(localWorkspacePath, stateStore, coordinator);
+			await firstScheduler.start();
+			await firstScheduler.createTask({
+				schedule: parseScheduleInput("2026-05-01 2:59pm", new Date("2026-04-30T15:00:00.000Z"), "UTC"),
+				prompt: "overdue prompt",
+				target: { type: "new_session" },
+			});
+			await firstScheduler.stop();
+
+			restoredScheduler = new ScheduledTaskRuntime(localWorkspacePath, stateStore, coordinator, {
+				onCompleted: async (event) => {
+					if (event.result) {
+						completedPrompts.push(event.result.assistantText);
+					}
+				},
+			});
+			await restoredScheduler.start();
+			await vi.runOnlyPendingTimersAsync();
+			await restoredScheduler.waitForInFlightOperations();
+
+			expect(completedPrompts).toEqual(["reply:overdue prompt"]);
+			expect(await restoredScheduler.listTasks()).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+			await restoredScheduler?.stop();
+			await rm(localTempDir, { recursive: true, force: true });
+		}
 	});
 });
 
