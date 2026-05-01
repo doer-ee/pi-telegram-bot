@@ -11,12 +11,15 @@ import {
 	SessionCoordinator,
 	type SessionCatalogEntry,
 } from "../src/session/session-coordinator.js";
-import {
-	createEmptyAppState,
-	type AppStateStore,
-	type StoredBotOwnedSessionPin,
-	type StoredSelectedSession,
-} from "../src/state/app-state.js";
+import { createEmptyAppState, type AppStateStore, type StoredBotOwnedSessionPin, type StoredSelectedSession } from "../src/state/app-state.js";
+
+vi.mock("../src/scheduler/schedule-time.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/scheduler/schedule-time.js")>();
+	return {
+		...actual,
+		getServerTimezone: () => "America/Chicago",
+	};
+});
 import { SessionPinSync } from "../src/telegram/session-pin-sync.js";
 import {
 	SCHEDULE_CANCEL_CALLBACK_DATA,
