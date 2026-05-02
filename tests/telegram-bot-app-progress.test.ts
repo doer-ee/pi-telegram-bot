@@ -91,6 +91,7 @@ describe("TelegramBotApp prompt progress behavior", () => {
 				payload: {
 					chat_id: CHAT_ID,
 					text: "Thinking...",
+					disable_notification: true,
 				},
 			},
 			{

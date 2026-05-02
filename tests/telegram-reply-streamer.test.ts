@@ -28,7 +28,10 @@ describe("TelegramReplyStreamer", () => {
 		]);
 		expect(client.editCalls).toHaveLength(2);
 		expect(client.sendCalls).toHaveLength(2);
-		expect(client.sendCalls[0]).toEqual({ text: "Thinking...", options: { parseMode: "plain" } });
+		expect(client.sendCalls[0]).toEqual({
+			text: "Thinking...",
+			options: { parseMode: "plain", silent: true },
+		});
 		expect(client.sendCalls[1]).toEqual({ text: "Final answer", options: { parseMode: "markdown" } });
 	});
 

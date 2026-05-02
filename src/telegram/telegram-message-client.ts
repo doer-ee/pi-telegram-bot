@@ -4,13 +4,14 @@ export type TelegramTextParseMode = "plain" | "markdown";
 
 export interface TelegramTextOptions {
 	parseMode?: TelegramTextParseMode;
+	silent?: boolean;
 }
 
 export interface TelegramApi {
 	sendMessage(
 		chatId: number,
 		text: string,
-		extra?: { parse_mode?: "MarkdownV2" },
+		extra?: { parse_mode?: "MarkdownV2"; disable_notification?: boolean },
 	): Promise<{ message_id: number }>;
 	editMessageText(
 		chatId: number,
@@ -35,11 +36,17 @@ export interface TelegramMessageClient {
 export function createTelegramMessageClient(telegram: TelegramApi): TelegramMessageClient {
 	return {
 		async sendText(chatId: number, text: string, options?: TelegramTextOptions): Promise<number> {
+			const silentExtra = options?.silent ? { disable_notification: true } : undefined;
+
 			if (options?.parseMode === "markdown") {
 				try {
-					const message = await telegram.sendMessage(chatId, formatTelegramMarkdown(text), {
-						parse_mode: "MarkdownV2",
-					});
+					const message = await telegram.sendMessage(
+						chatId,
+						formatTelegramMarkdown(text),
+						silentExtra
+							? { parse_mode: "MarkdownV2", disable_notification: true }
+							: { parse_mode: "MarkdownV2" },
+					);
 					return message.message_id;
 				} catch (error) {
 					if (!isTelegramFormattingRejectedError(error)) {
@@ -48,7 +55,7 @@ export function createTelegramMessageClient(telegram: TelegramApi): TelegramMess
 				}
 			}
 
-			const message = await telegram.sendMessage(chatId, text);
+			const message = await telegram.sendMessage(chatId, text, silentExtra);
 			return message.message_id;
 		},
 		async editText(chatId: number, messageId: number, text: string, options?: TelegramTextOptions): Promise<void> {

@@ -159,7 +159,10 @@ export class TelegramReplyStreamer {
 		for (const [index, chunk] of nextChunks.entries()) {
 			const messageId = this.progressMessageIds[index];
 			if (messageId === undefined) {
-				const newMessageId = await this.client.sendText(this.chatId, chunk, { parseMode: renderMode });
+				const newMessageId = await this.client.sendText(this.chatId, chunk, {
+					parseMode: renderMode,
+					silent: true,
+				});
 				this.progressMessageIds.push(newMessageId);
 				continue;
 			}

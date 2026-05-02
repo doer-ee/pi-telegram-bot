@@ -33,16 +33,20 @@ async function main(): Promise<void> {
 		aiFallback: new PiScheduleAiParser(runtimeFactory, config.workspacePath),
 	});
 	const scheduler = new ScheduledTaskRuntime(config.workspacePath, stateStore, coordinator, {
-		onDelayed: async (event) => {
-			await telegramMessageClient.sendText(config.authorizedTelegramUserId, formatScheduledTaskDelayText(event));
-		},
-		onCompleted: async (event) => {
-			await telegramMessageClient.sendText(config.authorizedTelegramUserId, formatScheduledTaskResultText(event));
-		},
-		onFailed: async (event) => {
-			await telegramMessageClient.sendText(config.authorizedTelegramUserId, formatScheduledTaskResultText(event));
-		},
-	});
+	onDelayed: async (event) => {
+		await telegramMessageClient.sendText(config.authorizedTelegramUserId, formatScheduledTaskDelayText(event));
+	},
+	onCompleted: async (event) => {
+		await telegramMessageClient.sendText(
+			config.authorizedTelegramUserId,
+			formatScheduledTaskResultText(event),
+			{ silent: true },
+		);
+	},
+	onFailed: async (event) => {
+		await telegramMessageClient.sendText(config.authorizedTelegramUserId, formatScheduledTaskResultText(event));
+	},
+});
 	const app = new TelegramBotApp(config, coordinator, sessionPinSync, scheduler, scheduleInputParser);
 
 	const shutdown = createShutdownHandler(app);

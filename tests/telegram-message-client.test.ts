@@ -3,13 +3,30 @@ import { formatTelegramMarkdown } from "../src/telegram/telegram-markdown.js";
 import { createTelegramMessageClient, type TelegramApi } from "../src/telegram/telegram-message-client.js";
 
 describe("createTelegramMessageClient", () => {
-	it("falls back to plain text when Telegram rejects a markdown send", async () => {
+	it("omits disable_notification when silent mode is not requested", async () => {
+		const telegram = new MockTelegramApi();
+		const client = createTelegramMessageClient(telegram);
+
+		const messageId = await client.sendText(42, "Hello there");
+
+		expect(messageId).toBe(1);
+		expect(telegram.sendCalls).toEqual([
+			{
+				chatId: 42,
+				text: "Hello there",
+				extra: undefined,
+			},
+		]);
+	});
+
+	it("passes silent mode through markdown send fallback attempts", async () => {
 		const telegram = new MockTelegramApi();
 		telegram.failNextMarkdownSend = true;
 		const client = createTelegramMessageClient(telegram);
 
 		const messageId = await client.sendText(42, "Use **bold** output", {
 			parseMode: "markdown",
+			silent: true,
 		});
 
 		expect(messageId).toBe(1);
@@ -17,12 +34,12 @@ describe("createTelegramMessageClient", () => {
 			{
 				chatId: 42,
 				text: formatTelegramMarkdown("Use **bold** output"),
-				extra: { parse_mode: "MarkdownV2" },
+				extra: { parse_mode: "MarkdownV2", disable_notification: true },
 			},
 			{
 				chatId: 42,
 				text: "Use **bold** output",
-				extra: undefined,
+				extra: { disable_notification: true },
 			},
 		]);
 	});
@@ -61,7 +78,7 @@ class MockTelegramApi implements TelegramApi {
 	readonly sendCalls: Array<{
 		chatId: number;
 		text: string;
-		extra: { parse_mode?: "MarkdownV2" } | undefined;
+		extra: { parse_mode?: "MarkdownV2"; disable_notification?: boolean } | undefined;
 	}> = [];
 	readonly editCalls: Array<{
 		chatId: number;
@@ -76,7 +93,7 @@ class MockTelegramApi implements TelegramApi {
 	async sendMessage(
 		chatId: number,
 		text: string,
-		extra?: { parse_mode?: "MarkdownV2" },
+		extra?: { parse_mode?: "MarkdownV2"; disable_notification?: boolean },
 	): Promise<{ message_id: number }> {
 		this.sendCalls.push({ chatId, text, extra });
 		if (extra?.parse_mode === "MarkdownV2" && this.failNextMarkdownSend) {
