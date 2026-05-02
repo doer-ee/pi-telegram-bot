@@ -246,6 +246,7 @@ describe("TelegramBotApp /rename", () => {
 				payload: {
 					chat_id: CHAT_ID,
 					text: "Thinking...",
+					disable_notification: true,
 				},
 			},
 			{
