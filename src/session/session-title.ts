@@ -27,39 +27,6 @@ const GENERIC_TITLES = new Set([
 	"user request",
 ]);
 
-const STOP_WORDS = new Set([
-	"a",
-	"an",
-	"and",
-	"are",
-	"as",
-	"at",
-	"be",
-	"by",
-	"for",
-	"from",
-	"help",
-	"how",
-	"i",
-	"in",
-	"into",
-	"is",
-	"it",
-	"me",
-	"my",
-	"of",
-	"on",
-	"or",
-	"please",
-	"the",
-	"this",
-	"to",
-	"we",
-	"with",
-	"you",
-	"your",
-]);
-
 export interface SessionTitleRefinementSelection {
 	prompt: string;
 	heuristicTitle: string;
@@ -76,21 +43,7 @@ export function generateHeuristicSessionTitle(prompt: string): string {
 }
 
 export function selectRefinedSessionTitle(selection: SessionTitleRefinementSelection): string | undefined {
-	const candidateTitle = normalizeCandidateSessionTitle(selection.candidateTitle);
-	if (!candidateTitle) {
-		return undefined;
-	}
-
-	const normalizedHeuristic = selection.heuristicTitle.trim().toLowerCase();
-	if (candidateTitle.toLowerCase() === normalizedHeuristic) {
-		return undefined;
-	}
-
-	if (!hasMeaningfulOverlap(candidateTitle, `${selection.prompt} ${selection.heuristicTitle}`)) {
-		return undefined;
-	}
-
-	return candidateTitle;
+	return normalizeCandidateSessionTitle(selection.candidateTitle);
 }
 
 export function buildSessionTitleRefinementPrompt(prompt: string, heuristicTitle: string): string {
@@ -201,21 +154,6 @@ function smartTruncate(text: string, maxLength: number): string {
 
 function normalizeSentenceStart(text: string): string {
 	return /^[a-z]/u.test(text) ? `${text[0]?.toUpperCase() ?? ""}${text.slice(1)}` : text;
-}
-
-function hasMeaningfulOverlap(candidateTitle: string, sourceText: string): boolean {
-	const sourceTokens = new Set(getMeaningfulTokens(sourceText));
-	if (sourceTokens.size === 0) {
-		return false;
-	}
-
-	return getMeaningfulTokens(candidateTitle).some((token) => sourceTokens.has(token));
-}
-
-function getMeaningfulTokens(text: string): string[] {
-	return (text.toLowerCase().match(/[a-z0-9][a-z0-9./_-]*/giu) ?? []).filter(
-		(token) => token.length > 2 && !STOP_WORDS.has(token),
-	);
 }
 
 function countWords(text: string): number {
