@@ -89,6 +89,8 @@ export const SESSION_SELECTION_CANCEL_CALLBACK_DATA = "sessions:cancel";
 export const SESSION_CLEAR_ALL_CALLBACK_DATA = "sessions:clear-all";
 export const SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA = "sessions:clear-all:confirm";
 const SESSION_SELECTION_PAGE_SIZE = 5;
+const TELEGRAM_INLINE_BUTTON_TEXT_LIMIT = 60;
+const UNNAMED_SESSION_FIRST_MESSAGE_PLACEHOLDER = "(awaiting first assistant reply)";
 export const MODEL_SELECTION_PAGE_CALLBACK_PREFIX = "models:page:";
 export const MODEL_SELECTION_CANCEL_CALLBACK_DATA = "models:cancel";
 export const MODEL_SWITCH_CALLBACK_PREFIX = "models:select:";
@@ -1186,17 +1188,51 @@ export async function dismissSessionSelectionKeyboard(ctx: SessionSelectionCance
 
 function buildSessionButtonLabel(session: SessionCatalogEntry): string {
 	const prefix = session.isSelected ? "current" : "select";
-	const name = session.name ?? session.id.slice(0, 8);
-	return `${prefix}: ${name}`.slice(0, 60);
+	if (typeof session.name === "string" && session.name.trim().length > 0) {
+		return `${prefix}: ${session.name}`.slice(0, TELEGRAM_INLINE_BUTTON_TEXT_LIMIT);
+	}
+
+	const fallbackLabel = getUnnamedSessionButtonFallbackLabel(session);
+	return truncateTelegramInlineButtonText(`${prefix}: ${fallbackLabel}`, TELEGRAM_INLINE_BUTTON_TEXT_LIMIT);
 }
 
 function buildModelButtonLabel(model: PiModelDescriptor, currentModel: PiModelDescriptor | undefined): string {
 	const label = formatModelIdentifier(model);
 	if (isSameModel(model, currentModel)) {
-		return `current: ${label}`.slice(0, 60);
+		return `current: ${label}`.slice(0, TELEGRAM_INLINE_BUTTON_TEXT_LIMIT);
 	}
 
-	return label.slice(0, 60);
+	return label.slice(0, TELEGRAM_INLINE_BUTTON_TEXT_LIMIT);
+}
+
+function getUnnamedSessionButtonFallbackLabel(session: SessionCatalogEntry): string {
+	return normalizeUnnamedSessionFirstMessage(session.firstMessage) ?? session.id.slice(0, 8);
+}
+
+function normalizeUnnamedSessionFirstMessage(firstMessage: string | undefined): string | undefined {
+	if (typeof firstMessage !== "string") {
+		return undefined;
+	}
+
+	const normalized = firstMessage.replace(/\s+/gu, " ").trim();
+	if (normalized.length === 0 || normalized === UNNAMED_SESSION_FIRST_MESSAGE_PLACEHOLDER) {
+		return undefined;
+	}
+
+	return normalized;
+}
+
+function truncateTelegramInlineButtonText(value: string, maxLength: number): string {
+	const characters = Array.from(value);
+	if (characters.length <= maxLength) {
+		return value;
+	}
+
+	if (maxLength <= 3) {
+		return characters.slice(0, maxLength).join("");
+	}
+
+	return `${characters.slice(0, maxLength - 3).join("").trimEnd()}...`;
 }
 
 function createModelSelectionToken(model: PiModelDescriptor): string {

@@ -197,6 +197,68 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 		expect(JSON.stringify(harness.apiCalls[0])).not.toContain("Last page");
 	});
 
+	it("uses the first message preview for unnamed-session picker labels", async () => {
+		const unnamedSession = createSession({
+			id: "12345678-unnamed",
+			name: undefined,
+			firstMessage: "Please help\nme fix this picker",
+		});
+		const harness = createTelegramBotAppHarness([ALPHA_SESSION, unnamedSession]);
+
+		await harness.handleUpdate(createSessionsCommandUpdate());
+
+		expect(harness.apiCalls[0]?.method).toBe("sendMessage");
+		const inlineKeyboard = getInlineKeyboard(harness.apiCalls[0]);
+		expect(inlineKeyboard[0]?.[0]).toMatchObject({
+			text: "current: Alpha",
+			callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${ALPHA_SESSION.id}`,
+			hide: false,
+		});
+		expect(inlineKeyboard[1]?.[0]).toMatchObject({
+			text: "select: Please help me fix this picker",
+			callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${unnamedSession.id}`,
+			hide: false,
+		});
+	});
+
+	it("truncates unnamed-session first-message fallback labels to a Telegram-safe length", async () => {
+		const unnamedSession = createSession({
+			id: "87654321-unnamed",
+			name: undefined,
+			firstMessage: "x".repeat(80),
+		});
+		const harness = createTelegramBotAppHarness([ALPHA_SESSION, unnamedSession]);
+
+		await harness.handleUpdate(createSessionsCommandUpdate());
+
+		expect(harness.apiCalls[0]?.method).toBe("sendMessage");
+		const inlineKeyboard = getInlineKeyboard(harness.apiCalls[0]);
+		expect(inlineKeyboard[1]?.[0]).toMatchObject({
+			text: `select: ${"x".repeat(49)}...`,
+			callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${unnamedSession.id}`,
+			hide: false,
+		});
+	});
+
+	it("falls back to the short id when an unnamed session has no usable first message", async () => {
+		const unnamedSession = createSession({
+			id: "abcdef12-unnamed",
+			name: undefined,
+			firstMessage: " \n\t ",
+		});
+		const harness = createTelegramBotAppHarness([ALPHA_SESSION, unnamedSession]);
+
+		await harness.handleUpdate(createSessionsCommandUpdate());
+
+		expect(harness.apiCalls[0]?.method).toBe("sendMessage");
+		const inlineKeyboard = getInlineKeyboard(harness.apiCalls[0]);
+		expect(inlineKeyboard[1]?.[0]).toMatchObject({
+			text: "select: abcdef12",
+			callback_data: `${SESSION_SELECTION_CALLBACK_PREFIX}${unnamedSession.id}`,
+			hide: false,
+		});
+	});
+
 	it("opens a confirmation step before clearing all sessions", async () => {
 		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS);
 
@@ -672,6 +734,13 @@ class TestSessionCoordinator extends SessionCoordinator {
 interface TelegramApiCall {
 	method: string;
 	payload: unknown;
+}
+
+function getInlineKeyboard(call: TelegramApiCall | undefined) {
+	const inlineKeyboard = (call?.payload as { reply_markup?: { inline_keyboard?: unknown } } | undefined)?.reply_markup
+		?.inline_keyboard;
+	expect(inlineKeyboard).toBeDefined();
+	return inlineKeyboard as Array<Array<{ text: string; callback_data: string; hide: boolean }>>;
 }
 
 interface InternalTelegrafBot {
