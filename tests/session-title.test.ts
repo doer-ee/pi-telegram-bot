@@ -48,14 +48,14 @@ describe("session-title", () => {
 			expect(refinedTitle).toBe("Release checklist for the Pi Telegram bot");
 		});
 
-		it("#when the candidate is a usable Chinese title #then it replaces the heuristic title", () => {
+		it("#when the candidate is a usable pure Chinese title #then it replaces the heuristic title", () => {
 			const refinedTitle = selectRefinedSessionTitle({
 				prompt: "请帮我排查 Telegram 机器人在 /new 之后的会话命名问题，并确保首条消息保持响应迅速",
 				heuristicTitle: "排查 Telegram 机器人会话命名问题",
-				candidateTitle: "首次响应 UX 优化",
+				candidateTitle: "会话命名问题排查",
 			});
 
-			expect(refinedTitle).toBe("首次响应 UX 优化");
+			expect(refinedTitle).toBe("会话命名问题排查");
 		});
 
 		it("#when the candidate is generic or weak #then it keeps the heuristic title", () => {

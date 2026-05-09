@@ -96,7 +96,7 @@ function isWeakSessionTitle(title: string): boolean {
 		return true;
 	}
 
-	if (!/[a-z0-9]/iu.test(normalized)) {
+	if (!/[\p{L}\p{N}]/u.test(normalized)) {
 		return true;
 	}
 
