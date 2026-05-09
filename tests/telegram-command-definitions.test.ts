@@ -9,19 +9,19 @@ import { formatHelpText } from "../src/telegram/telegram-formatters.js";
 describe("TELEGRAM_BOT_COMMANDS", () => {
 	it("matches the supported Telegram command surface", () => {
 		expect(TELEGRAM_BOT_COMMANDS).toEqual([
-			{ command: "start", description: "Show bot status and help" },
-			{ command: "help", description: "Show available commands" },
-			{ command: "status", description: "Show bot and session status" },
 			{ command: "new", description: "Create and select a new Pi session" },
 			{ command: "sessions", description: "List sessions and select one" },
-			{ command: "current", description: "Show the selected session" },
-			{ command: "rename", description: "Rename the selected session" },
 			{ command: "model", description: "Choose the current session model" },
-			{ command: "abort", description: "Abort the active run" },
 			{ command: "schedule", description: "Start the schedule flow" },
 			{ command: "schedules", description: "List scheduled tasks" },
+			{ command: "rename", description: "Rename the selected session" },
+			{ command: "abort", description: "Abort the active run" },
+			{ command: "start", description: "Show bot status and help" },
+			{ command: "status", description: "Show bot and session status" },
+			{ command: "current", description: "Show the selected session" },
 			{ command: "unschedule", description: "Choose a scheduled task to delete" },
 			{ command: "runscheduled", description: "Choose a scheduled task to run now" },
+			{ command: "help", description: "Show available commands" },
 		]);
 	});
 });
