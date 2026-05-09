@@ -21,7 +21,9 @@ export class TelegramReplyStreamer {
 	private readonly emptyCompletionText: string;
 	private readonly maxProgressEntries: number;
 	private readonly progressMessageIds: number[] = [];
+	private readonly assistantMessageIds: number[] = [];
 	private lastProgressChunks: string[] = [];
+	private lastAssistantChunks: string[] = [];
 	private pending: Promise<void> = Promise.resolve();
 	private flushTimer: ReturnType<typeof setTimeout> | undefined;
 	private lastFlushAt = 0;
@@ -52,7 +54,12 @@ export class TelegramReplyStreamer {
 	}
 
 	pushText(text: string): void {
+		if (this.latestAssistantText === text) {
+			return;
+		}
+
 		this.latestAssistantText = text;
+		this.scheduleFlush();
 	}
 
 	pushProgress(summary: string): void {
@@ -75,20 +82,18 @@ export class TelegramReplyStreamer {
 	async finish(status: "completed" | "aborted" | "error", fallbackText?: string): Promise<void> {
 		this.completionStatus = status;
 
-		const finalText = this.resolveFinalText(status, fallbackText);
-
-		if (fallbackText !== undefined) {
-			this.latestAssistantText = fallbackText;
-		}
-
 		if (this.flushTimer) {
 			clearTimeout(this.flushTimer);
 			this.flushTimer = undefined;
 		}
 
-		await this.flushProgress();
+		await this.flush();
 		await this.pending;
-		await this.sendStandaloneText(finalText, status === "completed" ? "markdown" : "plain");
+
+		const finalText = this.resolveFinalText(status, fallbackText);
+		if (!this.hasRenderedAssistantText(finalText)) {
+			await this.sendStandaloneText(finalText, status === "completed" ? "markdown" : "plain");
+		}
 	}
 
 	private scheduleFlush(): void {
@@ -100,17 +105,25 @@ export class TelegramReplyStreamer {
 		const delay = Math.max(0, this.options.throttleMs - elapsed);
 		this.flushTimer = setTimeout(() => {
 			this.flushTimer = undefined;
-			void this.flushProgress();
+			void this.flush();
 		}, delay);
 	}
 
-	private async flushProgress(): Promise<void> {
+	private async flush(): Promise<void> {
 		await this.enqueue(async () => {
-			const nextChunks = chunkText(this.renderProgressMessage(), this.options.chunkSize);
-			if (chunksMatch(this.lastProgressChunks, nextChunks)) {
-				return;
+			const nextProgressChunks = chunkText(this.renderProgressMessage(), this.options.chunkSize);
+			if (!chunksMatch(this.lastProgressChunks, nextProgressChunks)) {
+				await this.renderProgressChunks(nextProgressChunks, "plain");
 			}
-			await this.renderProgressChunks(nextChunks, "plain");
+
+			const nextAssistantChunks = this.latestAssistantText.length > 0
+				? chunkText(this.latestAssistantText, this.options.chunkSize)
+				: [];
+			if (!chunksMatch(this.lastAssistantChunks, nextAssistantChunks)) {
+				await this.renderAssistantChunks(nextAssistantChunks, "markdown");
+			}
+
+			this.lastFlushAt = Date.now();
 		});
 	}
 
@@ -155,6 +168,14 @@ export class TelegramReplyStreamer {
 		}
 	}
 
+	private hasRenderedAssistantText(text: string): boolean {
+		if (this.assistantMessageIds.length === 0 || text.length === 0) {
+			return false;
+		}
+
+		return chunksMatch(this.lastAssistantChunks, chunkText(text, this.options.chunkSize));
+	}
+
 	private async renderProgressChunks(nextChunks: string[], renderMode: TelegramTextParseMode): Promise<void> {
 		for (const [index, chunk] of nextChunks.entries()) {
 			const messageId = this.progressMessageIds[index];
@@ -190,7 +211,42 @@ export class TelegramReplyStreamer {
 		}
 
 		this.lastProgressChunks = nextChunks;
-		this.lastFlushAt = Date.now();
+	}
+
+	private async renderAssistantChunks(nextChunks: string[], renderMode: TelegramTextParseMode): Promise<void> {
+		for (const [index, chunk] of nextChunks.entries()) {
+			const messageId = this.assistantMessageIds[index];
+			if (messageId === undefined) {
+				const newMessageId = await this.client.sendText(this.chatId, chunk, {
+					parseMode: renderMode,
+				});
+				this.assistantMessageIds.push(newMessageId);
+				continue;
+			}
+
+			if (this.lastAssistantChunks[index] === chunk) {
+				continue;
+			}
+
+			try {
+				await this.client.editText(this.chatId, messageId, chunk, { parseMode: renderMode });
+			} catch (error) {
+				if (!isTelegramNotModifiedError(error)) {
+					throw error;
+				}
+			}
+		}
+
+		for (let index = this.assistantMessageIds.length - 1; index >= nextChunks.length; index -= 1) {
+			const messageId = this.assistantMessageIds[index];
+			if (messageId === undefined) {
+				continue;
+			}
+			await this.client.deleteText(this.chatId, messageId);
+			this.assistantMessageIds.splice(index, 1);
+		}
+
+		this.lastAssistantChunks = nextChunks;
 	}
 
 	private async sendStandaloneText(text: string, renderMode: TelegramTextParseMode): Promise<void> {
