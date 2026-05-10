@@ -1,3 +1,7 @@
+import {
+	createProcessLifecycleLogContext,
+	formatProcessLifecycleLogMessage,
+} from "./app-lifecycle-logging.js";
 import { loadAppConfig } from "./config/app-config.js";
 import { loadProjectEnv } from "./config/project-env.js";
 import { PiSdkRuntimeFactory } from "./pi/pi-sdk-runtime-factory.js";
@@ -14,7 +18,10 @@ import { createTelegramMessageClient } from "./telegram/telegram-message-client.
 import { SessionPinSync } from "./telegram/session-pin-sync.js";
 import { Telegram } from "telegraf";
 
+const processLifecycleLogContext = createProcessLifecycleLogContext();
+
 async function main(): Promise<void> {
+	console.info(formatProcessLifecycleLogMessage(processLifecycleLogContext, "starting bot"));
 	loadProjectEnv();
 
 	const config = loadAppConfig();
@@ -33,31 +40,31 @@ async function main(): Promise<void> {
 		aiFallback: new PiScheduleAiParser(runtimeFactory, config.workspacePath),
 	});
 	const scheduler = new ScheduledTaskRuntime(config.workspacePath, stateStore, coordinator, {
-	onDelayed: async (event) => {
-		await telegramMessageClient.sendText(config.authorizedTelegramUserId, formatScheduledTaskDelayText(event));
-	},
-	onCompleted: async (event) => {
-		await telegramMessageClient.sendText(
-			config.authorizedTelegramUserId,
-			formatScheduledTaskResultText(event),
-			{ silent: true },
-		);
-	},
-	onFailed: async (event) => {
-		await telegramMessageClient.sendText(config.authorizedTelegramUserId, formatScheduledTaskResultText(event));
-	},
-});
+		onDelayed: async (event) => {
+			await telegramMessageClient.sendText(config.authorizedTelegramUserId, formatScheduledTaskDelayText(event));
+		},
+		onCompleted: async (event) => {
+			await telegramMessageClient.sendText(
+				config.authorizedTelegramUserId,
+				formatScheduledTaskResultText(event),
+				{ silent: true },
+			);
+		},
+		onFailed: async (event) => {
+			await telegramMessageClient.sendText(config.authorizedTelegramUserId, formatScheduledTaskResultText(event));
+		},
+	});
 	const app = new TelegramBotApp(config, coordinator, sessionPinSync, scheduler, scheduleInputParser);
 
-	const shutdown = createShutdownHandler(app);
+	const shutdown = createShutdownHandler(app, processLifecycleLogContext);
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
 
 	await app.start();
-	console.log("[pi-telegram-bot] bot started");
+	console.info(formatProcessLifecycleLogMessage(processLifecycleLogContext, "bot started"));
 }
 
-function createShutdownHandler(app: TelegramBotApp) {
+function createShutdownHandler(app: TelegramBotApp, context: typeof processLifecycleLogContext) {
 	let shuttingDown = false;
 
 	return async (signal: NodeJS.Signals): Promise<void> => {
@@ -67,16 +74,17 @@ function createShutdownHandler(app: TelegramBotApp) {
 		shuttingDown = true;
 
 		try {
-			console.log(`[pi-telegram-bot] stopping on ${signal}`);
+			console.info(formatProcessLifecycleLogMessage(context, `stopping on ${signal}`));
 			await app.stop(signal);
+			console.info(formatProcessLifecycleLogMessage(context, `stopped on ${signal}`));
 		} catch (error) {
-			console.error("[pi-telegram-bot] shutdown failed:", error);
+			console.error(formatProcessLifecycleLogMessage(context, "shutdown failed:"), error);
 			process.exitCode = 1;
 		}
 	};
 }
 
 void main().catch((error) => {
-	console.error("[pi-telegram-bot] startup failed:", error);
+	console.error(formatProcessLifecycleLogMessage(processLifecycleLogContext, "startup failed:"), error);
 	process.exitCode = 1;
 });

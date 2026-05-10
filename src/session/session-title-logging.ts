@@ -19,6 +19,12 @@ const SECRET_TOKEN_PATTERNS = [
 
 type SessionTitleRefinementOutcome = "accepted" | "rejected" | "unavailable" | "timed out" | "failed";
 
+export interface SessionTitleRefinementOutcomeLogEmission {
+	target: "default-service-log-stderr";
+	severity: "warning" | "error";
+	message: string;
+}
+
 export function logHeuristicSessionTitle(title: string): void {
 	console.info(`${SESSION_TITLE_LOG_PREFIX} heuristic=${formatTitleForLog(title)}`);
 }
@@ -32,6 +38,26 @@ export function logSessionTitleRefinementOutcome(options: {
 	finalTitle: string;
 	candidateTitle?: string;
 }): void {
+	const emission = getSessionTitleRefinementOutcomeLogEmission(options);
+	if (!emission) {
+		return;
+	}
+
+	switch (emission.severity) {
+		case "warning":
+			console.warn(emission.message);
+			return;
+		case "error":
+			console.error(emission.message);
+			return;
+	}
+}
+
+export function getSessionTitleRefinementOutcomeLogEmission(options: {
+	outcome: SessionTitleRefinementOutcome;
+	finalTitle: string;
+	candidateTitle?: string;
+}): SessionTitleRefinementOutcomeLogEmission | undefined {
 	const fragments = [
 		`${SESSION_TITLE_LOG_PREFIX} refinement ${options.outcome}`,
 		`final=${formatTitleForLog(options.finalTitle)}`,
@@ -41,7 +67,28 @@ export function logSessionTitleRefinementOutcome(options: {
 		fragments.push(`candidate=${formatTitleForLog(options.candidateTitle)}`);
 	}
 
-	console.info(fragments.join(" "));
+	if (options.outcome === "accepted" || options.outcome === "rejected") {
+		// Intentionally omit routine refinement outcomes from the default service log surface.
+		// In this app's current launchd setup, console.debug still lands in the same logs.
+		return undefined;
+	}
+
+	const message = fragments.join(" ");
+	switch (options.outcome) {
+		case "timed out":
+		case "unavailable":
+			return {
+				target: "default-service-log-stderr",
+				severity: "warning",
+				message,
+			};
+		case "failed":
+			return {
+				target: "default-service-log-stderr",
+				severity: "error",
+				message,
+			};
+	}
 }
 
 export function sanitizeSessionTitleForLog(title: string): string {

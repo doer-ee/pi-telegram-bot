@@ -55,12 +55,16 @@ let currentHasConfiguredAuth: (model: Model<Api>) => boolean = () => true;
 
 describe("PiSdkRuntimeFactory", () => {
 	let consoleInfoMock: ReturnType<typeof vi.spyOn>;
+	let consoleWarnMock: ReturnType<typeof vi.spyOn>;
+	let consoleErrorMock: ReturnType<typeof vi.spyOn>;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
 		currentAvailableModels = [];
 		currentHasConfiguredAuth = () => true;
 		consoleInfoMock = vi.spyOn(console, "info").mockImplementation(() => undefined);
+		consoleWarnMock = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		consoleErrorMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
 		sessionManagerCreateMock.mockImplementation((cwd: string) => ({
 			getCwd: () => cwd,
@@ -105,6 +109,8 @@ describe("PiSdkRuntimeFactory", () => {
 
 	afterEach(() => {
 		consoleInfoMock.mockRestore();
+		consoleWarnMock.mockRestore();
+		consoleErrorMock.mockRestore();
 	});
 
 	it("#given a restored selected session with a stale header cwd #when creating the runtime #then it reapplies the configured workspace path", async () => {
@@ -517,7 +523,7 @@ describe("PiSdkRuntimeFactory", () => {
 			'Configured title refinement model "shared-model" is ambiguous. Matches: alpha/shared-model, beta/shared-model',
 		);
 		expect(createAgentSessionFromServicesMock).not.toHaveBeenCalled();
-		expect(consoleInfoMock).toHaveBeenCalledWith(
+		expect(consoleWarnMock).toHaveBeenCalledWith(
 			"[pi-telegram-bot] session-title refinement unavailable final=\"Session title\"",
 		);
 	});
@@ -544,7 +550,7 @@ describe("PiSdkRuntimeFactory", () => {
 			'Configured title refinement model "unique-model" is missing auth configuration for openai/unique-model.',
 		);
 		expect(createAgentSessionFromServicesMock).not.toHaveBeenCalled();
-		expect(consoleInfoMock).toHaveBeenCalledWith(
+		expect(consoleWarnMock).toHaveBeenCalledWith(
 			"[pi-telegram-bot] session-title refinement unavailable final=\"Session title\"",
 		);
 	});
@@ -572,7 +578,7 @@ describe("PiSdkRuntimeFactory", () => {
 			'Configured title refinement model "gpt-5.4-mini" is missing auth configuration for openai/gpt-5.4-mini.',
 		);
 		expect(createAgentSessionFromServicesMock).not.toHaveBeenCalled();
-		expect(consoleInfoMock).toHaveBeenCalledWith(
+		expect(consoleWarnMock).toHaveBeenCalledWith(
 			"[pi-telegram-bot] session-title refinement unavailable final=\"Session title\"",
 		);
 	});
@@ -593,7 +599,7 @@ describe("PiSdkRuntimeFactory", () => {
 				workspacePath: "/workspace",
 			}),
 		).resolves.toBeUndefined();
-		expect(consoleInfoMock).toHaveBeenCalledWith(
+		expect(consoleWarnMock).toHaveBeenCalledWith(
 			"[pi-telegram-bot] session-title refinement timed out final=\"Session title\"",
 		);
 	});
@@ -612,7 +618,7 @@ describe("PiSdkRuntimeFactory", () => {
 				workspacePath: "/workspace",
 			}),
 		).rejects.toThrowError("network down");
-		expect(consoleInfoMock).toHaveBeenCalledWith(
+		expect(consoleErrorMock).toHaveBeenCalledWith(
 			"[pi-telegram-bot] session-title refinement failed final=\"Session title\"",
 		);
 	});

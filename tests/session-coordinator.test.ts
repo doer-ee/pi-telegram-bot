@@ -195,7 +195,7 @@ describe("SessionCoordinator", () => {
 	});
 
 	describe("#given a brand new named session", () => {
-		it("#when the first prompt is sent after /new #then it applies a heuristic title immediately and refines once in the background", async () => {
+		it("#when the first prompt is sent after /new #then it applies a heuristic title immediately and keeps routine refinement acceptance off the default log surface", async () => {
 			const runtimeFactory = new MockPiRuntimeFactory();
 			const pendingRefinement = createDeferred<string | undefined>();
 			runtimeFactory.refineSessionTitleHandler = async () => pendingRefinement.promise;
@@ -223,15 +223,14 @@ describe("SessionCoordinator", () => {
 			expect(consoleInfoMock).toHaveBeenCalledWith(
 				"[pi-telegram-bot] session-title heuristic=\"Debug the Telegram bot session naming after\"",
 			);
-			expect(consoleInfoMock).toHaveBeenCalledWith(
-				"[pi-telegram-bot] session-title refinement accepted final=\"Telegram naming after /new\"",
-			);
+			expect(consoleInfoMock).toHaveBeenCalledTimes(1);
+			expect(consoleWarnMock).not.toHaveBeenCalled();
 
 			await coordinator.sendPrompt("follow-up prompt");
 			expect(runtimeFactory.refineRequests).toHaveLength(1);
 		});
 
-		it("#when AI refinement returns a weak title #then it keeps the heuristic title and logs the rejection", async () => {
+		it("#when AI refinement returns a weak title #then it keeps the heuristic title and keeps the routine rejection off the default log surface", async () => {
 			const runtimeFactory = new MockPiRuntimeFactory();
 			runtimeFactory.refineSessionTitleHandler = async () => "New chat";
 			const coordinator = new SessionCoordinator(
@@ -251,9 +250,8 @@ describe("SessionCoordinator", () => {
 			expect((await coordinator.getCurrentSession())?.name).toBe(
 				"Debug the Telegram bot session naming after",
 			);
-			expect(consoleInfoMock).toHaveBeenCalledWith(
-				"[pi-telegram-bot] session-title refinement rejected final=\"Debug the Telegram bot session naming after\" candidate=\"New chat\"",
-			);
+			expect(consoleInfoMock).toHaveBeenCalledTimes(1);
+			expect(consoleWarnMock).not.toHaveBeenCalled();
 		});
 
 		it("#when the active session name changes or the selection changes #then observers receive the active session update", async () => {
