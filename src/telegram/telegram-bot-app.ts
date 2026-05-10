@@ -53,7 +53,10 @@ import {
 	formatStatusText,
 } from "./telegram-formatters.js";
 import { registerTelegramBotCommands } from "./telegram-command-definitions.js";
-import { createTelegramMessageClient } from "./telegram-message-client.js";
+import {
+	createTelegramMessageClient,
+	type TelegramMessageClient,
+} from "./telegram-message-client.js";
 import { TelegramReplyStreamer } from "./telegram-reply-streamer.js";
 import { SessionPinSync } from "./session-pin-sync.js";
 import { sendStandaloneTelegramText } from "./send-telegram-text.js";
@@ -159,6 +162,7 @@ function createNoopScheduledTaskService(): ScheduledTaskService {
 export class TelegramBotApp {
 	private readonly bot: Telegraf<BotContext>;
 	private readonly sessionPinSync: SessionPinSync;
+	private readonly inFlightPromptRuns = new Set<Promise<void>>();
 	private removeActiveSessionObserver: (() => void) | undefined;
 	private pendingRename: PendingRenameState | undefined;
 	private started = false;
@@ -200,6 +204,8 @@ export class TelegramBotApp {
 		this.removeActiveSessionObserver?.();
 		this.removeActiveSessionObserver = undefined;
 		await this.scheduler.stop();
+		await this.coordinator.abortActiveRun();
+		await this.waitForInFlightPromptRuns();
 		await this.coordinator.dispose();
 	}
 	private registerHandlers(): void {
@@ -726,27 +732,13 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 				return;
 			}
 
-			await this.runWithErrorHandling(ctx, async () => {
-				const streamer = new TelegramReplyStreamer(createTelegramMessageClient(ctx.telegram), ctx.chat.id, {
-					throttleMs: this.config.streamThrottleMs,
-					chunkSize: this.config.telegramChunkSize,
-				});
+			if (this.coordinator.isBusy()) {
+				await ctx.reply(formatUserFacingError(new BusySessionError()));
+				return;
+			}
 
-				await streamer.start();
-				try {
-					const result = await this.coordinator.sendPrompt(text, {
-						onProgress: (update) => {
-							streamer.pushProgress(update.summary);
-						},
-						onAssistantText: (assistantText) => {
-							streamer.pushText(assistantText);
-						},
-					});
-					await streamer.finish(result.aborted ? "aborted" : "completed");
-				} catch (error) {
-					await streamer.finish("error", formatUserFacingError(error));
-					return;
-				}
+			await this.runWithErrorHandling(ctx, async () => {
+				this.launchDetachedPromptRun(ctx.chat.id, text);
 			});
 		});
 
@@ -767,6 +759,82 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 			await this.bot.telegram.editMessageReplyMarkup(chatId, messageId, undefined, undefined);
 		} catch {
 			return;
+		}
+	}
+
+	private launchDetachedPromptRun(chatId: number, text: string): void {
+		const client = createTelegramMessageClient(this.bot.telegram);
+		const streamer = new TelegramReplyStreamer(client, chatId, {
+			throttleMs: this.config.streamThrottleMs,
+			chunkSize: this.config.telegramChunkSize,
+		});
+		const promptPromise = this.coordinator.sendPrompt(text, {
+			onProgress: (update) => {
+				streamer.pushProgress(update.summary);
+			},
+			onAssistantText: (assistantText) => {
+				streamer.pushText(assistantText);
+			},
+		});
+		const runPromise = this.runDetachedPrompt(promptPromise, streamer, client, chatId);
+		this.trackInFlightPromptRun(runPromise);
+	}
+
+	private async runDetachedPrompt(
+		promptPromise: Promise<{ aborted: boolean }>,
+		streamer: TelegramReplyStreamer,
+		client: TelegramMessageClient,
+		chatId: number,
+	): Promise<void> {
+		let streamerStarted = false;
+
+		try {
+			await streamer.start();
+			streamerStarted = true;
+			const result = await promptPromise;
+			await streamer.finish(result.aborted ? "aborted" : "completed");
+		} catch (error) {
+			await this.reportDetachedPromptFailure({
+				client,
+				chatId,
+				streamer,
+				streamerStarted,
+				userFacingError: formatUserFacingError(error),
+			});
+		}
+	}
+
+	private trackInFlightPromptRun(runPromise: Promise<void>): void {
+		this.inFlightPromptRuns.add(runPromise);
+		void runPromise.catch((error) => {
+			console.error("[pi-telegram-bot] Detached prompt run failed:", error);
+		}).finally(() => {
+			this.inFlightPromptRuns.delete(runPromise);
+		});
+	}
+
+	private async waitForInFlightPromptRuns(): Promise<void> {
+		while (this.inFlightPromptRuns.size > 0) {
+			await Promise.allSettled(Array.from(this.inFlightPromptRuns));
+		}
+	}
+
+	private async reportDetachedPromptFailure(options: {
+		client: TelegramMessageClient;
+		chatId: number;
+		streamer: TelegramReplyStreamer;
+		streamerStarted: boolean;
+		userFacingError: string;
+	}): Promise<void> {
+		try {
+			if (options.streamerStarted) {
+				await options.streamer.finish("error", options.userFacingError);
+				return;
+			}
+
+			await options.client.sendText(options.chatId, options.userFacingError);
+		} catch (deliveryError) {
+			console.error("[pi-telegram-bot] Failed to deliver detached prompt error:", deliveryError);
 		}
 	}
 

@@ -84,6 +84,7 @@ describe("TelegramBotApp prompt progress behavior", () => {
 		Reflect.set(bot, "botInfo", createBotInfo());
 
 		await bot.handleUpdate(createPromptUpdate("Please help with the progress UI"));
+		await waitUntil(() => apiCalls.length === 3);
 
 		expect(apiCalls).toEqual([
 			{
@@ -117,16 +118,322 @@ describe("TelegramBotApp prompt progress behavior", () => {
 		expect(combinedApiPayloads).not.toContain(secretToken);
 		expect(combinedApiPayloads).not.toContain("Authorization:");
 
-		await coordinator.dispose();
+		await app.stop();
+	});
+
+	it("returns from the Telegram text handler before a paused prompt finishes and still delivers completion later", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+		const runtimeSession = runtimeFactory.getSession(session.path);
+		runtimeSession?.queuePromptEvents([
+			{
+				type: "tool_execution_start",
+				toolName: "read",
+				args: {
+					path: "/workspace/src/session/session-coordinator.ts",
+				},
+			},
+		]);
+		runtimeSession?.pauseNextPrompt();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync());
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		let handlerFinished = false;
+		const handleUpdatePromise = bot.handleUpdate(createPromptUpdate("Please keep going")).then(() => {
+			handlerFinished = true;
+		});
+
+		await waitUntil(() => hasProgressText(apiCalls, "Thinking...\n• Reading .../src/session/session-coordinator.ts"));
+
+		expect(handlerFinished).toBe(true);
+		expect(runtimeSession?.isStreaming).toBe(true);
+		expect(apiCalls).toContainEqual({
+			method: "sendMessage",
+			payload: {
+				chat_id: CHAT_ID,
+				text: "Thinking...",
+				disable_notification: true,
+			},
+		});
+		expect(apiCalls).toContainEqual({
+			method: "editMessageText",
+			payload: {
+				chat_id: CHAT_ID,
+				message_id: PROGRESS_MESSAGE_ID,
+				inline_message_id: undefined,
+				text: "Thinking...\n• Reading .../src/session/session-coordinator.ts",
+			},
+		});
+		expect(hasProgressText(apiCalls, "Completed.\n• Reading .../src/session/session-coordinator.ts")).toBe(false);
+		expect(hasSentText(apiCalls, "reply:Please keep going")).toBe(false);
+
+		runtimeSession?.resumePausedPrompt();
+		await handleUpdatePromise;
+		await waitUntil(() => hasProgressText(apiCalls, "Completed.\n• Reading .../src/session/session-coordinator.ts"));
+		await waitUntil(() => hasSentText(apiCalls, "reply:Please keep going"));
+
+		expect(apiCalls).toContainEqual({
+			method: "editMessageText",
+			payload: {
+				chat_id: CHAT_ID,
+				message_id: PROGRESS_MESSAGE_ID,
+				inline_message_id: undefined,
+				text: "Completed.\n• Reading .../src/session/session-coordinator.ts",
+			},
+		});
+		expect(apiCalls).toContainEqual({
+			method: "sendMessage",
+			payload: {
+				chat_id: CHAT_ID,
+				text: "reply:Please keep going",
+				parse_mode: "MarkdownV2",
+			},
+		});
+
+		await app.stop();
+	});
+
+	it("keeps freeform busy semantics truthful while a detached prompt is still active", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+		const runtimeSession = runtimeFactory.getSession(session.path);
+		runtimeSession?.pauseNextPrompt();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync());
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		let firstHandlerFinished = false;
+		void bot.handleUpdate(createPromptUpdate("First prompt")).then(() => {
+			firstHandlerFinished = true;
+		});
+
+		await waitUntil(() => hasSentText(apiCalls, "Thinking..."));
+		apiCalls.length = 0;
+
+		expect(firstHandlerFinished).toBe(true);
+		expect(runtimeSession?.isStreaming).toBe(true);
+
+		await bot.handleUpdate(createPromptUpdate("Second prompt", 2));
+
+		expect(apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "A Pi run is already active. Abort it before sending another prompt or changing sessions or models.",
+				},
+			},
+		]);
+
+		await app.stop();
+	});
+
+	it("keeps /abort wired to the active detached prompt run", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+		runtimeFactory.getSession(session.path)?.pauseNextPrompt();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync());
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		let handlerFinished = false;
+		void bot.handleUpdate(createPromptUpdate("Prompt to abort")).then(() => {
+			handlerFinished = true;
+		});
+
+		await waitUntil(() => hasSentText(apiCalls, "Thinking..."));
+
+		expect(handlerFinished).toBe(true);
+
+		await bot.handleUpdate(createCommandUpdate("/abort", 2));
+		await waitUntil(() => hasSentText(apiCalls, "Abort requested."));
+		await waitUntil(() => hasProgressText(apiCalls, "Run aborted."));
+		await waitUntil(() => countSentTexts(apiCalls, "Run aborted.") >= 1);
+
+		expect(apiCalls).toContainEqual({
+			method: "sendMessage",
+			payload: {
+				chat_id: CHAT_ID,
+				text: "Abort requested.",
+			},
+		});
+		expect(apiCalls).toContainEqual({
+			method: "editMessageText",
+			payload: {
+				chat_id: CHAT_ID,
+				message_id: PROGRESS_MESSAGE_ID,
+				inline_message_id: undefined,
+				text: "Run aborted.",
+			},
+		});
+		expect(apiCalls).toContainEqual({
+			method: "sendMessage",
+			payload: {
+				chat_id: CHAT_ID,
+				text: "Run aborted.",
+			},
+		});
+		expect((await coordinator.getStatus()).busy).toBe(false);
+
+		await app.stop();
+	});
+
+	it("delivers detached prompt failure after handler return through detached Telegram delivery", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+		const runtimeSession = runtimeFactory.getSession(session.path);
+		runtimeSession?.pauseNextPrompt();
+		runtimeSession?.failNextPrompt(new Error("Pi bridge exploded."));
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync());
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		let handlerFinished = false;
+		const handleUpdatePromise = bot.handleUpdate(createPromptUpdate("Please fail later")).then(() => {
+			handlerFinished = true;
+		});
+
+		await waitUntil(() => hasSentText(apiCalls, "Thinking..."));
+
+		expect(handlerFinished).toBe(true);
+		expect(apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Thinking...",
+					disable_notification: true,
+				},
+			},
+		]);
+
+		runtimeSession?.resumePausedPrompt();
+		await handleUpdatePromise;
+		await waitUntil(() => hasProgressText(apiCalls, "Request failed."));
+		await waitUntil(() => hasSentText(apiCalls, "Request failed: Pi bridge exploded."));
+
+		expect(apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Thinking...",
+					disable_notification: true,
+				},
+			},
+			{
+				method: "editMessageText",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: PROGRESS_MESSAGE_ID,
+					inline_message_id: undefined,
+					text: "Request failed.",
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Request failed: Pi bridge exploded.",
+				},
+			},
+		]);
+
+		await app.stop();
+	});
+
+	it("app.stop aborts an in-flight detached prompt and waits for cleanup before resolving", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		const releaseFinalAbortDelivery = createDeferred<void>();
+		restoreTelegramApi = interceptTelegramApi(apiCalls, {
+			beforeResolve: async (method, payload) => {
+				if (method === "sendMessage" && getPayloadText(payload) === "Run aborted.") {
+					await releaseFinalAbortDelivery.promise;
+				}
+			},
+		});
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+		const runtimeSession = runtimeFactory.getSession(session.path);
+		runtimeSession?.pauseNextPrompt();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync());
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		let handlerFinished = false;
+		void bot.handleUpdate(createPromptUpdate("Stop me cleanly")).then(() => {
+			handlerFinished = true;
+		});
+
+		await waitUntil(() => hasSentText(apiCalls, "Thinking..."));
+
+		expect(handlerFinished).toBe(true);
+		expect(runtimeSession?.isStreaming).toBe(true);
+
+		let stopResolved = false;
+		const stopPromise = app.stop().then(() => {
+			stopResolved = true;
+		});
+
+		await waitUntil(() => hasProgressText(apiCalls, "Run aborted."));
+		await waitUntil(() => hasSentText(apiCalls, "Run aborted."));
+		await flushAsyncWork();
+
+		expect(stopResolved).toBe(false);
+		expect(coordinator.isBusy()).toBe(false);
+		expect(runtimeSession?.isStreaming).toBe(false);
+
+		releaseFinalAbortDelivery.resolve();
+		await stopPromise;
+
+		expect(stopResolved).toBe(true);
+		expect(coordinator.isBusy()).toBe(false);
+		expect(runtimeSession?.isStreaming).toBe(false);
+		expect((Reflect.get(app, "inFlightPromptRuns") as Set<Promise<void>>).size).toBe(0);
 	});
 });
 
-function interceptTelegramApi(apiCalls: TelegramApiCall[]): () => void {
+function interceptTelegramApi(
+	apiCalls: TelegramApiCall[],
+	options?: {
+		beforeResolve?: (method: string, payload: unknown) => Promise<void> | void;
+	},
+): () => void {
 	const originalCallApi = Telegram.prototype.callApi;
 	let nextMessageId = PROGRESS_MESSAGE_ID;
 
 	Reflect.set(Telegram.prototype, "callApi", async (method: string, payload: unknown) => {
 		apiCalls.push({ method, payload });
+		await options?.beforeResolve?.(method, payload);
 		if (method === "sendMessage") {
 			return { message_id: nextMessageId++ };
 		}
@@ -212,15 +519,35 @@ function createBotInfo() {
 	};
 }
 
-function createPromptUpdate(text: string): Update {
+function createPromptUpdate(text: string, updateId = 1): Update {
 	return {
-		update_id: 1,
+		update_id: updateId,
 		message: {
 			message_id: 10,
 			date: 1,
 			chat: createPrivateChat(),
 			from: createAuthorizedUser(),
 			text,
+		},
+	};
+}
+
+function createCommandUpdate(command: string, updateId = 1): Update {
+	return {
+		update_id: updateId,
+		message: {
+			message_id: 10,
+			date: 1,
+			chat: createPrivateChat(),
+			from: createAuthorizedUser(),
+			text: command,
+			entities: [
+				{
+					offset: 0,
+					length: command.split(" ")[0]?.length ?? command.length,
+					type: "bot_command",
+				},
+			],
 		},
 	};
 }
@@ -337,6 +664,8 @@ class MockPiSession implements PiSessionPort {
 	private readonly listeners = new Set<PiSessionEventListener>();
 	private queuedPromptEvents: PiSessionEvent[] = [];
 	private streaming = false;
+	private pausedPrompt: Deferred<void> | undefined;
+	private nextPromptFailure: Error | undefined;
 
 	constructor(path: string, cwd: string, sessionId: string) {
 		this.sessionFile = path;
@@ -378,6 +707,22 @@ class MockPiSession implements PiSessionPort {
 			this.emit(event);
 		}
 		this.queuedPromptEvents = [];
+
+		if (this.pausedPrompt) {
+			await this.pausedPrompt.promise;
+		}
+
+		if (!this.streaming) {
+			return;
+		}
+
+		if (this.nextPromptFailure) {
+			const error = this.nextPromptFailure;
+			this.nextPromptFailure = undefined;
+			this.streaming = false;
+			throw error;
+		}
+
 		this.emit({
 			type: "message_update",
 			message: {
@@ -399,10 +744,24 @@ class MockPiSession implements PiSessionPort {
 
 	async abort(): Promise<void> {
 		this.streaming = false;
+		this.resumePausedPrompt();
 	}
 
 	queuePromptEvents(events: PiSessionEvent[]): void {
 		this.queuedPromptEvents.push(...events);
+	}
+
+	pauseNextPrompt(): void {
+		this.pausedPrompt = createDeferred<void>();
+	}
+
+	resumePausedPrompt(): void {
+		this.pausedPrompt?.resolve();
+		this.pausedPrompt = undefined;
+	}
+
+	failNextPrompt(error: Error): void {
+		this.nextPromptFailure = error;
 	}
 
 	toSessionInfo(): SessionInfoRecord {
@@ -431,7 +790,69 @@ interface TelegramApiCall {
 	payload: unknown;
 }
 
+interface Deferred<T> {
+	promise: Promise<T>;
+	resolve: (value: T | PromiseLike<T>) => void;
+	reject: (reason?: unknown) => void;
+}
+
 interface InternalTelegrafBot {
 	handleUpdate(update: Update): Promise<void>;
 	botInfo?: unknown;
+}
+
+function createDeferred<T>(): Deferred<T> {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+		resolve = resolvePromise;
+		reject = rejectPromise;
+	});
+	return { promise, resolve, reject };
+}
+
+async function flushAsyncWork(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
+async function waitFor(timeoutMs: number): Promise<void> {
+	await new Promise((resolve) => {
+		setTimeout(resolve, timeoutMs);
+	});
+}
+
+async function waitUntil(condition: () => boolean, timeoutMs = 100): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (condition()) {
+			return;
+		}
+		await waitFor(0);
+		await flushAsyncWork();
+	}
+
+	if (!condition()) {
+		throw new Error("Timed out waiting for asynchronous Telegram output.");
+	}
+}
+
+function hasSentText(apiCalls: TelegramApiCall[], text: string): boolean {
+	return apiCalls.some((call) => call.method === "sendMessage" && getPayloadText(call.payload) === text);
+}
+
+function hasProgressText(apiCalls: TelegramApiCall[], text: string): boolean {
+	return apiCalls.some((call) => call.method === "editMessageText" && getPayloadText(call.payload) === text);
+}
+
+function countSentTexts(apiCalls: TelegramApiCall[], text: string): number {
+	return apiCalls.filter((call) => call.method === "sendMessage" && getPayloadText(call.payload) === text).length;
+}
+
+function getPayloadText(payload: unknown): string | undefined {
+	if (!payload || typeof payload !== "object" || !("text" in payload)) {
+		return undefined;
+	}
+
+	return typeof payload.text === "string" ? payload.text : undefined;
 }
