@@ -445,53 +445,100 @@ describe("TelegramBotApp /sessions popup behavior", () => {
 	});
 });
 
-it("keeps callback-query errors short when clear-all fails with a long raw error", async () => {
-	const clearAllError = new Error(`Pi deletion failed: ${"shared-session-path ".repeat(20).trim()}`);
-	const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS, {}, clearAllError);
+	it("keeps callback-query errors short when clear-all fails with a long raw error", async () => {
+		const clearAllError = new Error(`Pi deletion failed: ${"shared-session-path ".repeat(20).trim()}`);
+		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS, {}, clearAllError);
 
-	await harness.handleUpdate(
-		createCallbackQueryUpdate({
-			callbackQueryId: "confirm-clear-all-error-callback",
-			data: SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA,
-		}),
-	);
-
-	expect(harness.apiCalls).toEqual([
-		{
-			method: "editMessageReplyMarkup",
-			payload: {
-				chat_id: CHAT_ID,
-				message_id: SESSIONS_POPUP_MESSAGE_ID,
-				inline_message_id: undefined,
-				reply_markup: undefined,
-			},
-		},
-		{
-			method: "answerCallbackQuery",
-			payload: {
-				callback_query_id: "confirm-clear-all-error-callback",
-				text: "Request failed. See chat for details.",
-			},
-		},
-		{
-			method: "sendMessage",
-			payload: expect.objectContaining({
-				chat_id: CHAT_ID,
-				text: `Request failed: ${clearAllError.message}`,
+		await harness.handleUpdate(
+			createCallbackQueryUpdate({
+				callbackQueryId: "confirm-clear-all-error-callback",
+				data: SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA,
 			}),
-		},
-	]);
-});
+		);
+
+		expect(harness.apiCalls).toEqual([
+			{
+				method: "editMessageReplyMarkup",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: SESSIONS_POPUP_MESSAGE_ID,
+					inline_message_id: undefined,
+					reply_markup: undefined,
+				},
+			},
+			{
+				method: "answerCallbackQuery",
+				payload: {
+					callback_query_id: "confirm-clear-all-error-callback",
+					text: "Request failed. See chat for details.",
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: expect.objectContaining({
+					chat_id: CHAT_ID,
+					text: `Request failed: ${clearAllError.message}`,
+				}),
+			},
+		]);
+	});
+
+	it("still sends the full chat fallback when callback error popup delivery is rejected", async () => {
+		const clearAllError = new Error(`Pi deletion failed: ${"shared-session-path ".repeat(20).trim()}`);
+		const harness = createTelegramBotAppHarness(TWO_PAGE_SESSIONS, {}, clearAllError, {
+			beforeResolve(method) {
+				if (method === "answerCallbackQuery") {
+					throw new Error("Bad Request: MESSAGE_TOO_LONG");
+				}
+			},
+		});
+
+		await harness.handleUpdate(
+			createCallbackQueryUpdate({
+				callbackQueryId: "confirm-clear-all-answer-failure-callback",
+				data: SESSION_CLEAR_ALL_CONFIRM_CALLBACK_DATA,
+			}),
+		);
+
+		expect(harness.apiCalls).toEqual([
+			{
+				method: "editMessageReplyMarkup",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: SESSIONS_POPUP_MESSAGE_ID,
+					inline_message_id: undefined,
+					reply_markup: undefined,
+				},
+			},
+			{
+				method: "answerCallbackQuery",
+				payload: {
+					callback_query_id: "confirm-clear-all-answer-failure-callback",
+					text: "Request failed. See chat for details.",
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: expect.objectContaining({
+					chat_id: CHAT_ID,
+					text: `Request failed: ${clearAllError.message}`,
+				}),
+			},
+		]);
+	});
 });
 
 function createTelegramBotAppHarness(
 	sessions: SessionCatalogEntry[],
 	persistedReplies: Record<string, string | undefined> = {},
 	clearAllSessionsError?: Error,
+	telegramApiOptions?: {
+		beforeResolve?: (method: string, payload: unknown) => Promise<void> | void;
+	},
 ) {
 	const apiCalls: TelegramApiCall[] = [];
 	restoreTelegramApi?.();
-	restoreTelegramApi = interceptTelegramApi(apiCalls);
+	restoreTelegramApi = interceptTelegramApi(apiCalls, telegramApiOptions);
 
 	const coordinator = new TestSessionCoordinator(sessions, persistedReplies, clearAllSessionsError);
 	const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync());
@@ -507,12 +554,18 @@ function createTelegramBotAppHarness(
 	};
 }
 
-function interceptTelegramApi(apiCalls: TelegramApiCall[]): () => void {
+function interceptTelegramApi(
+	apiCalls: TelegramApiCall[],
+	options?: {
+		beforeResolve?: (method: string, payload: unknown) => Promise<void> | void;
+	},
+): () => void {
 	const originalCallApi = Telegram.prototype.callApi;
 	let nextMessageId = SESSIONS_POPUP_MESSAGE_ID;
 
 	Reflect.set(Telegram.prototype, "callApi", async (method: string, payload: unknown) => {
 		apiCalls.push({ method, payload });
+		await options?.beforeResolve?.(method, payload);
 		if (method === "sendMessage") {
 			return { message_id: nextMessageId++ };
 		}

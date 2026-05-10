@@ -840,14 +840,18 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 
 	private async runWithErrorHandling(ctx: BotContext, operation: () => Promise<void>): Promise<void> {
 		try {
-	await operation();
-} catch (error) {
-	const userFacingError = formatUserFacingError(error);
-	if (isCallbackContext(ctx)) {
-		await ctx.answerCbQuery(formatCallbackQueryError(userFacingError));
-	}
-	await ctx.reply(userFacingError);
-}
+			await operation();
+		} catch (error) {
+			const userFacingError = formatUserFacingError(error);
+			if (isCallbackContext(ctx)) {
+				try {
+					await ctx.answerCbQuery(formatCallbackQueryError(userFacingError));
+				} catch (callbackError) {
+					console.error("[pi-telegram-bot] Failed to answer callback query error:", callbackError);
+				}
+			}
+			await ctx.reply(userFacingError);
+		}
 	}
 }
 
