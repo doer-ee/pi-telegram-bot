@@ -7,7 +7,7 @@ export class BusySessionError extends Error {
 
 export class NoSelectedSessionError extends Error {
 	constructor() {
-		super("No session is selected. Use /new, /sessions, or send a freeform message to create one.");
+		super("No session is selected. Use /new, /sessions, or send a freeform message or supported upload to create one.");
 		this.name = "NoSelectedSessionError";
 	}
 }

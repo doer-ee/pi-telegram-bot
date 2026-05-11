@@ -3,7 +3,7 @@ import { Markup, Telegraf, type Context } from "telegraf";
 import type { Update } from "telegraf/types";
 import type { AppConfig } from "../config/app-config.js";
 import { ModelNotAvailableError } from "../pi/pi-errors.js";
-import type { CurrentSessionModelSelection, PiModelDescriptor } from "../pi/pi-types.js";
+import type { CurrentSessionModelSelection, PiModelDescriptor, PiPromptContent } from "../pi/pi-types.js";
 import {
 	createDeterministicScheduleInputParser,
 	type ScheduleInputParser,
@@ -60,6 +60,12 @@ import {
 import { TelegramReplyStreamer } from "./telegram-reply-streamer.js";
 import { SessionPinSync } from "./session-pin-sync.js";
 import { sendStandaloneTelegramText } from "./send-telegram-text.js";
+import {
+	createTelegramMediaPromptResolver,
+	type ResolvedTelegramMediaPrompt,
+	type TelegramMediaMessageLike,
+	type TelegramMediaPromptResolver,
+} from "./telegram-media-prompt.js";
 
 type BotContext = Context<Update>;
 type MessageUpdate = Extract<Update, { message: unknown }>;
@@ -117,6 +123,10 @@ interface PendingRenameState {
 	promptMessageId: number;
 }
 
+interface TelegramBotAppOptions {
+	mediaPromptResolver?: TelegramMediaPromptResolver;
+}
+
 type PendingScheduleState =
 	| {
 			step: "target";
@@ -163,6 +173,7 @@ export class TelegramBotApp {
 	private readonly bot: Telegraf<BotContext>;
 	private readonly sessionPinSync: SessionPinSync;
 	private readonly inFlightPromptRuns = new Set<Promise<void>>();
+	private readonly mediaPromptResolver: TelegramMediaPromptResolver;
 	private removeActiveSessionObserver: (() => void) | undefined;
 	private pendingRename: PendingRenameState | undefined;
 	private started = false;
@@ -172,9 +183,11 @@ export class TelegramBotApp {
 		sessionPinSync: SessionPinSync,
 		private readonly scheduler: ScheduledTaskService = createNoopScheduledTaskService(),
 		private readonly scheduleInputParser: ScheduleInputParser = createDeterministicScheduleInputParser(),
+		options: TelegramBotAppOptions = {},
 	) {
 		this.bot = new Telegraf<BotContext>(config.telegramBotToken);
 		this.sessionPinSync = sessionPinSync;
+		this.mediaPromptResolver = options.mediaPromptResolver ?? createTelegramMediaPromptResolver();
 		this.registerHandlers();
 	}
 	async start(): Promise<void> {
@@ -742,6 +755,14 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 			});
 		});
 
+		this.bot.on("photo", async (ctx) => {
+			await this.handleMediaPromptMessage(ctx, ctx.message);
+		});
+
+		this.bot.on("document", async (ctx) => {
+			await this.handleMediaPromptMessage(ctx, ctx.message);
+		});
+
 		this.bot.catch(async (error, ctx) => {
 			console.error("[pi-telegram-bot] Unhandled Telegram error:", error);
 			if (ctx.chat?.type === "private") {
@@ -762,21 +783,53 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 		}
 	}
 
-	private launchDetachedPromptRun(chatId: number, text: string): void {
+	private async handleMediaPromptMessage(ctx: BotContext, message: TelegramMediaMessageLike): Promise<void> {
+		if (this.pendingSchedule) {
+			await ctx.reply("Finish or cancel the pending schedule flow before sending media or documents.");
+			return;
+		}
+
+		if (this.pendingRename) {
+			await ctx.reply("Finish or cancel the pending rename flow before sending media or documents.");
+			return;
+		}
+
+		if (this.coordinator.isBusy()) {
+			await ctx.reply(formatUserFacingError(new BusySessionError()));
+			return;
+		}
+
+		await this.runWithErrorHandling(ctx, async () => {
+			const chatId = ctx.chat?.id;
+			if (chatId === undefined) {
+				throw new Error("Could not determine the private chat for this media prompt.");
+			}
+
+			const resolvedPrompt = await this.mediaPromptResolver(message, this.config, this.bot.telegram);
+			this.launchDetachedPromptRun(chatId, resolvedPrompt.content, resolvedPrompt.cleanup, resolvedPrompt.userPromptText);
+		});
+	}
+
+	private launchDetachedPromptRun(
+		chatId: number,
+		content: PiPromptContent,
+		cleanup?: ResolvedTelegramMediaPrompt["cleanup"],
+		userPromptText?: string,
+	): void {
 		const client = createTelegramMessageClient(this.bot.telegram);
 		const streamer = new TelegramReplyStreamer(client, chatId, {
 			throttleMs: this.config.streamThrottleMs,
 			chunkSize: this.config.telegramChunkSize,
 		});
-		const promptPromise = this.coordinator.sendPrompt(text, {
+		const promptPromise = this.coordinator.sendPrompt(content, {
 			onProgress: (update) => {
 				streamer.pushProgress(update.summary);
 			},
 			onAssistantText: (assistantText) => {
 				streamer.pushText(assistantText);
 			},
-		});
-		const runPromise = this.runDetachedPrompt(promptPromise, streamer, client, chatId);
+		}, userPromptText ? { userPromptText } : undefined);
+		const runPromise = this.runDetachedPrompt(promptPromise, streamer, client, chatId, cleanup);
 		this.trackInFlightPromptRun(runPromise);
 	}
 
@@ -785,8 +838,13 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 		streamer: TelegramReplyStreamer,
 		client: TelegramMessageClient,
 		chatId: number,
+		cleanup?: () => Promise<void>,
 	): Promise<void> {
 		let streamerStarted = false;
+		const settledPromptPromise = promptPromise.then(
+			() => undefined,
+			() => undefined,
+		);
 
 		try {
 			await streamer.start();
@@ -801,6 +859,15 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 				streamerStarted,
 				userFacingError: formatUserFacingError(error),
 			});
+		} finally {
+			await settledPromptPromise;
+			if (cleanup) {
+				try {
+					await cleanup();
+				} catch (cleanupError) {
+					console.error("[pi-telegram-bot] Failed to clean up Telegram media prompt artifacts:", cleanupError);
+				}
+			}
 		}
 	}
 

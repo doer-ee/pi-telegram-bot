@@ -74,7 +74,7 @@ describe("TelegramBotApp /rename", () => {
 				method: "sendMessage",
 				payload: {
 					chat_id: CHAT_ID,
-					text: "No session is selected. Use /new, /sessions, or send a freeform message to create one.",
+					text: "No session is selected. Use /new, /sessions, or send a freeform message or supported upload to create one.",
 				},
 			},
 		]);
@@ -528,7 +528,7 @@ class TestSessionCoordinator extends SessionCoordinator {
 		return this.currentSession;
 	}
 
-	override async sendPrompt(text: string, observer?: PromptObserver): Promise<PromptResult> {
+	override async sendPrompt(text: string, observer?: PromptObserver, _options?: { userPromptText?: string }): Promise<PromptResult> {
 		this.sendPromptCalls.push(text);
 		observer?.onAssistantText?.(`reply:${text}`, true);
 		return {

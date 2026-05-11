@@ -50,5 +50,12 @@ describe("formatHelpText", () => {
 		expect(helpText).toContain("/runscheduled - Choose a scheduled task to run now");
 		expect(helpText).toContain("/unschedule - Choose a scheduled task to delete");
 		expect(helpText).toContain("Any non-command text message is sent to the selected session.");
+		expect(helpText).toContain("Private photos and supported image documents are sent with the image attached to the prompt.");
+		expect(helpText).toContain("Plain-text documents (.txt, .md, .json, .csv, .tsv, .log) are staged under the system temp directory and read from disk by Pi.");
+		expect(helpText).toContain("Supported PDFs and office documents are staged under the system temp directory and routed through pi-docparser.");
+		expect(helpText).toContain("Unsupported documents or parser-unready pi-docparser environments fail explicitly.");
+		expect(helpText).toContain(
+			"If no session is selected yet, the first freeform message or supported upload creates one automatically.",
+		);
 	});
 });

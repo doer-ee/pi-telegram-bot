@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	PiModelDescriptor,
+	PiPromptContent,
 	PiRuntimeFactory,
 	PiRuntimePort,
 	PiSessionEvent,
@@ -91,6 +92,32 @@ describe("SessionCoordinator", () => {
 			expect(consoleInfoMock).not.toHaveBeenCalledWith(
 				"[pi-telegram-bot] session-title refinement skipped final=\"Hello from telegram\"",
 			);
+		});
+
+		it("#when sending a prompt with an image attachment #then it forwards the direct-to-model content through the runtime boundary", async () => {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+			);
+
+			await coordinator.initialize();
+			const result = await coordinator.sendPrompt([
+				{ type: "text", text: "describe this item/doc I am sending in" },
+				{ type: "image", data: "ZmFrZS1pbWFnZS1ieXRlcw==", mimeType: "image/jpeg" },
+			]);
+
+			expect(result.assistantText).toBe("reply:describe this item/doc I am sending in");
+			expect(runtimeFactory.getSession(result.sessionPath)?.promptPayloads).toEqual([
+				[
+					{ type: "text", text: "describe this item/doc I am sending in" },
+					{ type: "image", data: "ZmFrZS1pbWFnZS1ieXRlcw==", mimeType: "image/jpeg" },
+				],
+			]);
+			expect(runtimeFactory.getSession(result.sessionPath)?.messages).toEqual([
+				"describe this item/doc I am sending in",
+			]);
 		});
 
 		it("#when the first prompt contains a secret-like token #then title diagnostics redact it from runtime logs", async () => {
@@ -252,6 +279,34 @@ describe("SessionCoordinator", () => {
 			);
 			expect(consoleInfoMock).toHaveBeenCalledTimes(1);
 			expect(consoleWarnMock).not.toHaveBeenCalled();
+		});
+
+		it("#when the stored Pi prompt includes routing instructions #then an explicit user prompt text can still drive the first-session title", async () => {
+			const runtimeFactory = new MockPiRuntimeFactory();
+			const coordinator = new SessionCoordinator(
+				workspacePath,
+				new FileAppStateStore(statePath),
+				runtimeFactory,
+			);
+
+			await coordinator.initialize();
+			await coordinator.createNewSession();
+			const fullPrompt = [
+				"review this brief",
+				"",
+				"The user sent a Telegram document that was saved locally at:",
+				join(tmpdir(), "telegram-upload-123", "brief.pdf"),
+				"",
+				"This document was not attached directly to the model.",
+				"Use the installed document_parse tool from pi-docparser before answering.",
+			].join("\n");
+
+			const result = await coordinator.sendPrompt(fullPrompt, undefined, {
+				userPromptText: "review this brief",
+			});
+
+			expect(result.assistantText).toBe(`reply:${fullPrompt}`);
+			expect((await coordinator.getCurrentSession())?.name).toBe("Review this brief");
 		});
 
 		it("#when the active session name changes or the selection changes #then observers receive the active session update", async () => {
@@ -1107,6 +1162,7 @@ class MockPiRuntime implements PiRuntimePort {
 
 class MockPiSession implements PiSessionPort {
 	readonly messages: string[] = [];
+	readonly promptPayloads: PiPromptContent[] = [];
 	readonly sessionNameUpdates: string[] = [];
 	readonly sessionId: string;
 	readonly sessionFile: string;
@@ -1169,7 +1225,8 @@ class MockPiSession implements PiSessionPort {
 		this.modified = new Date();
 	}
 
-	async sendUserMessage(content: string): Promise<void> {
+	async sendUserMessage(content: PiPromptContent): Promise<void> {
+		const textContent = normalizePromptText(content);
 		this.streaming = true;
 		for (const event of this.queuedPromptEvents) {
 			this.emit(event);
@@ -1179,7 +1236,7 @@ class MockPiSession implements PiSessionPort {
 			type: "message_update",
 			message: {
 				role: "assistant",
-				content: [{ type: "text", text: `reply:${content}` }],
+				content: [{ type: "text", text: `reply:${textContent}` }],
 			},
 		});
 
@@ -1187,13 +1244,14 @@ class MockPiSession implements PiSessionPort {
 			await this.pausedPrompt.promise;
 		}
 
-		this.messages.push(content);
+		this.promptPayloads.push(content);
+		this.messages.push(textContent);
 		this.modified = new Date();
 		this.emit({
 			type: "message_end",
 			message: {
 				role: "assistant",
-				content: [{ type: "text", text: `reply:${content}` }],
+				content: [{ type: "text", text: `reply:${textContent}` }],
 			},
 		});
 		this.streaming = false;
@@ -1252,6 +1310,17 @@ function createDeferred<T>(): Deferred<T> {
 		reject = rejectPromise;
 	});
 	return { promise, resolve, reject };
+}
+
+function normalizePromptText(content: PiPromptContent): string {
+	if (typeof content === "string") {
+		return content;
+	}
+
+	return content
+		.filter((part): part is { type: "text"; text: string } => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
 }
 
 async function flushAsyncWork(): Promise<void> {

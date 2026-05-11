@@ -355,7 +355,7 @@ describe("TelegramBotApp /model", () => {
 				method: "sendMessage",
 				payload: {
 					chat_id: CHAT_ID,
-					text: "No session is selected. Use /new, /sessions, or send a freeform message to create one.",
+					text: "No session is selected. Use /new, /sessions, or send a freeform message or supported upload to create one.",
 				},
 			},
 		]);

@@ -2,6 +2,8 @@ import { basename } from "node:path";
 import type {
 	CurrentSessionModelSelection,
 	PiModelDescriptor,
+	PiPromptContent,
+	PiPromptContentPart,
 	PiRuntimeFactory,
 	PiRuntimePort,
 	SessionInfoRecord,
@@ -57,6 +59,10 @@ export interface PromptResult {
 	sessionPath: string;
 	assistantText: string;
 	aborted: boolean;
+}
+
+export interface PromptRunOptions {
+	userPromptText?: string;
 }
 
 export interface ActiveSessionInfo {
@@ -307,8 +313,13 @@ export class SessionCoordinator {
 		return this.requireCurrentSession();
 	}
 
-	async sendPrompt(text: string, observer?: PromptObserver): Promise<PromptResult> {
+	async sendPrompt(
+		content: PiPromptContent,
+		observer?: PromptObserver,
+		options?: PromptRunOptions,
+	): Promise<PromptResult> {
 		this.assertIdle();
+		const text = resolvePromptTextForSessionMetadata(content, options?.userPromptText);
 		const activeRun: ActiveRun = {
 			sessionPath: this.selectedSession?.path ?? "pending-session-selection",
 			abortRequested: false,
@@ -364,7 +375,7 @@ export class SessionCoordinator {
 			});
 
 			observer?.onPromptStarted?.(selectedSession);
-			const promptPromise = runtime.session.sendUserMessage(text);
+			const promptPromise = runtime.session.sendUserMessage(content);
 			if (initialTitle) {
 				this.scheduleSessionTitleRefinement({
 					sessionPath: selectedSession.path,
@@ -724,6 +735,26 @@ function getModelKey(model: PiModelDescriptor | StoredRecentModel): string {
 
 function formatError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function resolvePromptTextForSessionMetadata(content: PiPromptContent, userPromptText: string | undefined): string {
+	const trimmedUserPromptText = userPromptText?.trim();
+	if (trimmedUserPromptText && trimmedUserPromptText.length > 0) {
+		return trimmedUserPromptText;
+	}
+
+	return extractPromptText(content);
+}
+
+function extractPromptText(content: PiPromptContent): string {
+	if (typeof content === "string") {
+		return content;
+	}
+
+	return content
+		.filter((part): part is Extract<PiPromptContentPart, { type: "text" }> => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
 }
 
 async function withTimeout<T>(promise: Promise<T | undefined>, timeoutMs: number): Promise<T | undefined> {

@@ -16,7 +16,11 @@ export function formatHelpText(): string {
 		...getTelegramHelpLines(),
 		"",
 		"Any non-command text message is sent to the selected session.",
-		"If no session is selected yet, the first freeform message creates one automatically.",
+		"Private photos and supported image documents are sent with the image attached to the prompt.",
+		"Plain-text documents (.txt, .md, .json, .csv, .tsv, .log) are staged under the system temp directory and read from disk by Pi.",
+		"Supported PDFs and office documents are staged under the system temp directory and routed through pi-docparser.",
+		"Unsupported documents or parser-unready pi-docparser environments fail explicitly.",
+		"If no session is selected yet, the first freeform message or supported upload creates one automatically.",
 	].join("\n");
 }
 
@@ -60,7 +64,7 @@ export function formatRenameConfirmationText(name: string): string {
 }
 
 export function formatNoSelectedSessionText(): string {
-	return "No session is selected. Use /new, /sessions, or send a freeform message to create one.";
+	return "No session is selected. Use /new, /sessions, or send a freeform message or supported upload to create one.";
 }
 
 export interface FormatModelSelectionTextOptions {
@@ -103,7 +107,7 @@ export interface FormatSessionsTextOptions {
 
 export function formatSessionsText(sessions: SessionCatalogEntry[], options?: FormatSessionsTextOptions): string {
 	if (sessions.length === 0) {
-		return "No Pi sessions found for the configured workspace yet. Use /new or send a freeform message.";
+		return "No Pi sessions found for the configured workspace yet. Use /new or send a freeform message or supported upload.";
 	}
 
 	return options?.pageCount && options.pageCount > 1

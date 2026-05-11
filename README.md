@@ -31,6 +31,9 @@ Telegram works well here because it's fast on mobile, has reliable push notifica
 - lets you change the current session's active conversation model with `/model`
 - supports `/new`, `/sessions`, `/current`, `/rename`, `/status`, and `/abort`
 - supports interactive scheduling with `/schedule`, `/schedules`, `/unschedule`, and `/runscheduled`
+- accepts private Telegram photos and supported image documents as direct image prompts
+- saves supported plain-text documents under the system temp directory and has Pi read them from disk
+- saves supported PDFs and office documents under the system temp directory and routes them through `pi-docparser`
 - registers the Telegram command menu on startup
 - streams replies back into Telegram and falls back to plain text if Markdown formatting is rejected
 - keeps a pinned `Active session:` message in sync when the active session has a title
@@ -69,6 +72,8 @@ In Telegram, message your bot:
 - a Telegram bot token from BotFather
 - your numeric Telegram user ID
 - a local Pi setup that already works on this machine
+- the `pi-docparser` Pi package installed in the same Pi environment the bot uses if you want parser-backed PDF or office-document uploads
+- LibreOffice installed if you want parser-backed Office or spreadsheet uploads on macOS/Linux
 
 This project does not log you into Pi or configure provider credentials for you. Pi must already be usable through the Pi SDK before this bot starts.
 
@@ -144,6 +149,22 @@ bun run build
 bun run start
 ```
 
+### 6. Optional parser-backed document setup
+
+If you want Telegram PDF or Office uploads to use Pi's parser-backed document path, install the Pi package in the same Pi environment the bot uses:
+
+```bash
+pi install npm:pi-docparser
+```
+
+For Office or spreadsheet formats such as `.docx`, `.pptx`, or `.xlsx`, install LibreOffice as a host dependency too:
+
+```bash
+brew install --cask libreoffice
+```
+
+PDF parsing does not normally require LibreOffice.
+
 ## Configuration reference
 
 ### Env-file loading behavior
@@ -195,7 +216,10 @@ Available commands:
 Behavior notes:
 
 - any non-command text message is sent to the selected session
-- if no session is selected yet, the first freeform text message creates one automatically
+- private Telegram photos and supported image documents are sent to Pi with the image attached
+- supported plain-text documents (`.txt`, `.md`, `.json`, `.csv`, `.tsv`, `.log`) are staged under the system temp directory and read from disk by Pi
+- supported PDFs and office documents are staged under the system temp directory and routed through `pi-docparser`
+- if no session is selected yet, the first freeform text message or supported upload creates one automatically
 - `/sessions` shows recent sessions and inline buttons for selecting
 - selecting a session from `/sessions` also resends that session's last persisted assistant reply when one exists
 - `/model` opens an inline picker for actually available models for the current session's active conversation model
@@ -203,7 +227,7 @@ Behavior notes:
 - `/model` does not change the separate background title-refinement model
 - while a run is active, new prompts, `/new`, session selection changes, and model changes are rejected until the run finishes or you use `/abort`
 - `/rename` opens a cancelable rename prompt for the selected session
-- non-text Telegram attachments are not sent to Pi in this MVP
+- unsupported documents or parser-unready `pi-docparser` environments fail explicitly
 
 ## Scheduled tasks
 
@@ -274,7 +298,9 @@ The public repo is meant to keep secrets and runtime output out of version contr
 - `.env` is local-only and should never be committed
 - `node_modules/` and `dist/` are generated output
 - `data/` stores local selected-session and pin state
-- `tmp/` stores local temporary diagnostics
+- `tmp/` stores local temporary diagnostics only
+
+Telegram upload staging uses the system temp directory for per-upload files and cleans those files up after the Pi prompt settles.
 
 The included `.gitignore` excludes those paths for public upload.
 
@@ -348,6 +374,16 @@ The selected env file is missing or unreadable. Check `.env` or the parent-shell
 ### The bot is busy
 
 Only one Pi run can be active at a time. Wait for completion or use `/abort`.
+
+### Parser-backed document uploads fail immediately
+
+Check these in order:
+
+1. `pi install npm:pi-docparser` was run in the same Pi environment the bot uses.
+2. The current Pi environment actually registers the `document_parse` tool.
+3. For Office or spreadsheet files, LibreOffice is installed (`brew install --cask libreoffice` on macOS).
+
+Plain-text uploads still use the normal file-read path, but PDFs and other parser-backed documents require a working `pi-docparser` package/tool environment before they are sent to Pi.
 
 ### The service does not start
 

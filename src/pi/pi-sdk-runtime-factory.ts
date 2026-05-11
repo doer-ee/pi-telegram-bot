@@ -18,6 +18,7 @@ import { ModelNotAvailableError } from "./pi-errors.js";
 import type {
 	BackgroundAssistantPromptRequest,
 	PiModelDescriptor,
+	PiPromptContent,
 	PiRuntimeFactory,
 	PiRuntimePort,
 	PiSessionEvent,
@@ -540,7 +541,7 @@ class PiSdkSessionAdapter implements PiSessionPort {
 		this.session.setSessionName(name);
 	}
 
-	async sendUserMessage(content: string): Promise<void> {
+	async sendUserMessage(content: PiPromptContent): Promise<void> {
 		await this.session.sendUserMessage(content);
 	}
 

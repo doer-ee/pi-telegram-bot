@@ -22,6 +22,20 @@ export interface SessionMessagePart {
 	text?: string;
 }
 
+export interface PiTextPromptContent {
+	type: "text";
+	text: string;
+}
+
+export interface PiImagePromptContent {
+	type: "image";
+	data: string;
+	mimeType: string;
+}
+
+export type PiPromptContentPart = PiTextPromptContent | PiImagePromptContent;
+export type PiPromptContent = string | PiPromptContentPart[];
+
 export interface SessionMessageLike {
 	role: string;
 	content?: string | SessionMessagePart[];
@@ -81,7 +95,7 @@ export interface PiSessionPort {
 	listAvailableModels(): Promise<PiModelDescriptor[]>;
 	setActiveModel(model: PiModelDescriptor): Promise<void>;
 	setSessionName(name: string): void;
-	sendUserMessage(content: string): Promise<void>;
+	sendUserMessage(content: PiPromptContent): Promise<void>;
 	abort(): Promise<void>;
 }
 

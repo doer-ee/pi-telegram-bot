@@ -1,3 +1,5 @@
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Telegram } from "telegraf";
@@ -5,6 +7,7 @@ import type { Update } from "telegraf/types";
 import type { AppConfig } from "../src/config/app-config.js";
 import type {
 	PiModelDescriptor,
+	PiPromptContent,
 	PiRuntimeFactory,
 	PiRuntimePort,
 	PiSessionEvent,
@@ -22,6 +25,7 @@ import {
 } from "../src/state/app-state.js";
 import { SessionPinSync } from "../src/telegram/session-pin-sync.js";
 import { TelegramBotApp } from "../src/telegram/telegram-bot-app.js";
+import { DEFAULT_TELEGRAM_MEDIA_PROMPT } from "../src/telegram/telegram-media-prompt.js";
 
 const AUTHORIZED_USER_ID = 101;
 const CHAT_ID = 101;
@@ -239,6 +243,324 @@ describe("TelegramBotApp prompt progress behavior", () => {
 		]);
 
 		await app.stop();
+	});
+
+	it("uses the caption as the direct-to-model instruction for authorized private photos", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async (message) => ({
+				content: [
+					{ type: "text", text: message.caption ?? DEFAULT_TELEGRAM_MEDIA_PROMPT },
+					{ type: "image", data: "ZmFrZS1waG90bw==", mimeType: "image/jpeg" },
+				],
+			}),
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createPhotoUpdate("describe the wiring in this image"));
+		await waitUntil(() => hasSentText(apiCalls, "reply:describe the wiring in this image"));
+
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([
+			[
+				{ type: "text", text: "describe the wiring in this image" },
+				{ type: "image", data: "ZmFrZS1waG90bw==", mimeType: "image/jpeg" },
+			],
+		]);
+
+		await app.stop();
+	});
+
+	it("uses the exact default instruction for captionless private photos", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async (message) => ({
+				content: [
+					{ type: "text", text: message.caption?.trim() || DEFAULT_TELEGRAM_MEDIA_PROMPT },
+					{ type: "image", data: "ZmFrZS1waG90bw==", mimeType: "image/jpeg" },
+				],
+			}),
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createPhotoUpdate(undefined));
+		await waitUntil(() => hasSentText(apiCalls, `reply:${DEFAULT_TELEGRAM_MEDIA_PROMPT}`));
+
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([
+			[
+				{ type: "text", text: DEFAULT_TELEGRAM_MEDIA_PROMPT },
+				{ type: "image", data: "ZmFrZS1waG90bw==", mimeType: "image/jpeg" },
+			],
+		]);
+
+		await app.stop();
+	});
+
+	it("routes supported image documents through the same direct-to-model prompt path", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async (message) => ({
+				content: [
+					{ type: "text", text: message.caption?.trim() || DEFAULT_TELEGRAM_MEDIA_PROMPT },
+					{ type: "image", data: "ZmFrZS1kb2N1bWVudC1pbWFnZQ==", mimeType: "image/png" },
+				],
+			}),
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createDocumentUpdate({ fileName: "diagram.png", mimeType: "image/png", caption: "inspect this diagram" }));
+		await waitUntil(() => hasSentText(apiCalls, "reply:inspect this diagram"));
+
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([
+			[
+				{ type: "text", text: "inspect this diagram" },
+				{ type: "image", data: "ZmFrZS1kb2N1bWVudC1pbWFnZQ==", mimeType: "image/png" },
+			],
+		]);
+
+		await app.stop();
+	});
+
+	it("routes supported plain-text documents through a truthful local-read prompt path", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+		const routedPrompt = [
+			"summarize these notes",
+			"",
+			"The user sent a Telegram plain-text document that was saved locally at:",
+			join(tmpdir(), "telegram-upload-123", "notes.txt"),
+			"",
+			"This document was not attached directly to the model.",
+			"Use the normal file-read path on that saved file, then answer the user's request.",
+			"If you cannot read the file, say so explicitly.",
+		].join("\n");
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async () => ({
+				content: routedPrompt,
+				userPromptText: "summarize these notes",
+			}),
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createDocumentUpdate({ fileName: "notes.txt", mimeType: "text/plain", caption: "summarize these notes" }));
+		await waitUntil(() => (runtimeFactory.getSession(session.path)?.promptPayloads.length ?? 0) === 1);
+
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([routedPrompt]);
+
+		await app.stop();
+	});
+
+	it("routes supported PDFs through a truthful pi-docparser prompt path", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+		const routedPrompt = [
+			"review this brief",
+			"",
+			"The user sent a Telegram document that was saved locally at:",
+			join(tmpdir(), "telegram-upload-123", "brief.pdf"),
+			"",
+			"This document was not attached directly to the model.",
+			"Use the installed document_parse tool from pi-docparser before answering.",
+			"pi-docparser package source: npm:pi-docparser",
+			"document_parse tool entry: /Users/example/.nvm/versions/node/v24.11.1/lib/node_modules/pi-docparser/extensions/docparser/index.ts",
+			"Do not use look_at for this document.",
+			"If document_parse cannot run or the document format is unsupported, stop and say that explicitly.",
+		].join("\n");
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async () => ({
+				content: routedPrompt,
+				userPromptText: "review this brief",
+			}),
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createDocumentUpdate({ fileName: "brief.pdf", mimeType: "application/pdf", caption: "review this brief" }));
+		await waitUntil(() => (runtimeFactory.getSession(session.path)?.promptPayloads.length ?? 0) === 1);
+
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([routedPrompt]);
+
+		await app.stop();
+	});
+
+	it("fails explicitly when parser-backed PDF processing is unavailable", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async () => {
+				throw new Error("pi-docparser is unavailable in the bot environment (npm:pi-docparser is not configured in the current Pi package settings. Run pi install npm:pi-docparser first.), so brief.pdf was not sent to Pi.");
+			},
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createDocumentUpdate({ fileName: "brief.pdf", mimeType: "application/pdf" }));
+
+		expect(apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Request failed: pi-docparser is unavailable in the bot environment (npm:pi-docparser is not configured in the current Pi package settings. Run pi install npm:pi-docparser first.), so brief.pdf was not sent to Pi.",
+				},
+			},
+		]);
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([]);
+
+		await app.stop();
+	});
+
+	it("extends truthful busy handling to media prompts", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+		const runtimeSession = runtimeFactory.getSession(session.path);
+		runtimeSession?.pauseNextPrompt();
+
+		let mediaResolverCalls = 0;
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async (message) => {
+				mediaResolverCalls += 1;
+				return {
+					content: [
+						{ type: "text", text: message.caption ?? DEFAULT_TELEGRAM_MEDIA_PROMPT },
+						{ type: "image", data: "ZmFrZS1waG90bw==", mimeType: "image/jpeg" },
+					],
+				};
+			},
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		void bot.handleUpdate(createPromptUpdate("First prompt"));
+		await waitUntil(() => hasSentText(apiCalls, "Thinking..."));
+		apiCalls.length = 0;
+
+		await bot.handleUpdate(createPhotoUpdate("second photo prompt", 2));
+
+		expect(apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "A Pi run is already active. Abort it before sending another prompt or changing sessions or models.",
+				},
+			},
+		]);
+		expect(mediaResolverCalls).toBe(0);
+
+		await app.stop();
+	});
+
+	it("does not clean up a saved system-temp upload when streamer startup fails before the Pi prompt settles", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		let failedThinkingStart = false;
+		restoreTelegramApi = interceptTelegramApi(apiCalls, {
+			beforeResolve: async (method, payload) => {
+				if (!failedThinkingStart && method === "sendMessage" && getPayloadText(payload) === "Thinking...") {
+					failedThinkingStart = true;
+					throw new Error("Telegram could not start the progress stream.");
+				}
+			},
+		});
+
+		const tempRoot = await mkdtemp(join(tmpdir(), "pi-telegram-bot-upload-cleanup-"));
+		const uploadDirectory = join(tempRoot, "telegram-upload-123");
+		const uploadPath = join(uploadDirectory, "notes.txt");
+		await mkdir(uploadDirectory, { recursive: true });
+		await writeFile(uploadPath, "temporary upload contents");
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+		const runtimeSession = runtimeFactory.getSession(session.path);
+		runtimeSession?.pauseNextPrompt();
+
+		let cleanupCalls = 0;
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async () => ({
+				content: [
+					"summarize these notes",
+					"",
+					"The user sent a Telegram plain-text document that was saved locally at:",
+					uploadPath,
+				].join("\n"),
+				userPromptText: "summarize these notes",
+				cleanup: async () => {
+					await rm(uploadDirectory, { recursive: true, force: true });
+					cleanupCalls += 1;
+				},
+			}),
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		const handleUpdatePromise = bot.handleUpdate(
+			createDocumentUpdate({ fileName: "notes.txt", mimeType: "text/plain", caption: "summarize these notes" }),
+		);
+
+		await handleUpdatePromise;
+		await waitUntil(() => hasSentText(apiCalls, "Request failed: Telegram could not start the progress stream."));
+
+		expect(runtimeSession?.isStreaming).toBe(true);
+		expect(cleanupCalls).toBe(0);
+		expect(await pathExists(uploadPath)).toBe(true);
+
+		runtimeSession?.resumePausedPrompt();
+		await waitUntil(() => cleanupCalls === 1);
+
+		expect(runtimeSession?.isStreaming).toBe(false);
+		expect(await pathExists(uploadDirectory)).toBe(false);
+
+		await app.stop();
+		await rm(tempRoot, { recursive: true, force: true });
 	});
 
 	it("keeps /abort wired to the active detached prompt run", async () => {
@@ -552,6 +874,43 @@ function createCommandUpdate(command: string, updateId = 1): Update {
 	};
 }
 
+function createPhotoUpdate(caption: string | undefined, updateId = 1): Update {
+	return {
+		update_id: updateId,
+		message: {
+			message_id: 11,
+			date: 1,
+			chat: createPrivateChat(),
+			from: createAuthorizedUser(),
+			...(caption !== undefined ? { caption } : {}),
+			photo: [
+				{ file_id: "photo-small", file_unique_id: "photo-small-unique", width: 64, height: 64, file_size: 1200 },
+				{ file_id: "photo-large", file_unique_id: "photo-large-unique", width: 256, height: 256, file_size: 6400 },
+			],
+		},
+	};
+}
+
+function createDocumentUpdate(options: { fileName: string; mimeType: string; caption?: string }, updateId = 1): Update {
+	return {
+		update_id: updateId,
+		message: {
+			message_id: 12,
+			date: 1,
+			chat: createPrivateChat(),
+			from: createAuthorizedUser(),
+			...(options.caption !== undefined ? { caption: options.caption } : {}),
+			document: {
+				file_id: `document-${options.fileName}`,
+				file_unique_id: `document-unique-${options.fileName}`,
+				file_name: options.fileName,
+				mime_type: options.mimeType,
+				file_size: 2048,
+			},
+		},
+	};
+}
+
 function createPrivateChat() {
 	return {
 		id: CHAT_ID,
@@ -656,6 +1015,7 @@ class MockPiRuntime implements PiRuntimePort {
 
 class MockPiSession implements PiSessionPort {
 	readonly messages: string[] = [];
+	readonly promptPayloads: PiPromptContent[] = [];
 	readonly sessionId: string;
 	readonly sessionFile: string;
 	readonly cwd: string;
@@ -701,7 +1061,8 @@ class MockPiSession implements PiSessionPort {
 		this.modified = new Date();
 	}
 
-	async sendUserMessage(content: string): Promise<void> {
+	async sendUserMessage(content: PiPromptContent): Promise<void> {
+		const textContent = normalizePromptText(content);
 		this.streaming = true;
 		for (const event of this.queuedPromptEvents) {
 			this.emit(event);
@@ -727,16 +1088,17 @@ class MockPiSession implements PiSessionPort {
 			type: "message_update",
 			message: {
 				role: "assistant",
-				content: [{ type: "text", text: `reply:${content}` }],
+				content: [{ type: "text", text: `reply:${textContent}` }],
 			},
 		});
-		this.messages.push(content);
+		this.promptPayloads.push(content);
+		this.messages.push(textContent);
 		this.modified = new Date();
 		this.emit({
 			type: "message_end",
 			message: {
 				role: "assistant",
-				content: [{ type: "text", text: `reply:${content}` }],
+				content: [{ type: "text", text: `reply:${textContent}` }],
 			},
 		});
 		this.streaming = false;
@@ -811,6 +1173,17 @@ function createDeferred<T>(): Deferred<T> {
 	return { promise, resolve, reject };
 }
 
+function normalizePromptText(content: PiPromptContent): string {
+	if (typeof content === "string") {
+		return content;
+	}
+
+	return content
+		.filter((part): part is { type: "text"; text: string } => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
+}
+
 async function flushAsyncWork(): Promise<void> {
 	await Promise.resolve();
 	await Promise.resolve();
@@ -855,4 +1228,13 @@ function getPayloadText(payload: unknown): string | undefined {
 	}
 
 	return typeof payload.text === "string" ? payload.text : undefined;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
 }

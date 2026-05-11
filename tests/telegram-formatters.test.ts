@@ -151,7 +151,7 @@ describe("formatSessionsText", () => {
 
 	it("keeps the truthful empty state when no sessions exist yet", () => {
 		expect(formatSessionsText([])).toBe(
-			"No Pi sessions found for the configured workspace yet. Use /new or send a freeform message.",
+			"No Pi sessions found for the configured workspace yet. Use /new or send a freeform message or supported upload.",
 		);
 	});
 });
@@ -177,7 +177,7 @@ describe("model selection formatters", () => { it("formats the /model picker hea
 		const selection = createModelSelection({ currentModel: undefined, availableModels: [] });
 
 		expect(formatNoSelectedSessionText()).toBe(
-			"No session is selected. Use /new, /sessions, or send a freeform message to create one.",
+			"No session is selected. Use /new, /sessions, or send a freeform message or supported upload to create one.",
 		);
 		expect(formatNoAvailableModelsText(selection)).toBe(
 			"Models:\nCurrent: unavailable (not reported by Pi runtime)\n\nNo auth-configured models are currently available.",

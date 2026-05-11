@@ -31,6 +31,28 @@ describe("shouldRejectUnauthorizedPrivateUpdate", () => {
 		).toBe(false);
 	});
 
+	it("rejects unauthorized private photo messages", () => {
+		expect(
+			shouldRejectUnauthorizedPrivateUpdate(
+				createPrivatePhotoMessageUpdate({
+					fromId: UNAUTHORIZED_USER_ID,
+				}),
+				AUTHORIZED_USER_ID,
+			),
+		).toBe(true);
+	});
+
+	it("rejects unauthorized private document messages", () => {
+		expect(
+			shouldRejectUnauthorizedPrivateUpdate(
+				createPrivateDocumentMessageUpdate({
+					fromId: UNAUTHORIZED_USER_ID,
+				}),
+				AUTHORIZED_USER_ID,
+			),
+		).toBe(true);
+	});
+
 	it("rejects unauthorized private callback queries", () => {
 		expect(
 			shouldRejectUnauthorizedPrivateUpdate(
@@ -81,6 +103,39 @@ function createPrivateCallbackQueryUpdate(options: { fromId: number }): Update {
 				chat: createPrivateChat(options.fromId),
 				from: createUser(BOT_USER_ID, true),
 				text: "Select a session",
+			},
+		},
+	};
+}
+
+function createPrivatePhotoMessageUpdate(options: { fromId: number }): Update {
+	return {
+		update_id: 4,
+		message: {
+			message_id: 14,
+			date: 1,
+			chat: createPrivateChat(options.fromId),
+			from: createUser(options.fromId),
+			photo: [
+				{ file_id: "photo-1", file_unique_id: "photo-1-unique", width: 64, height: 64 },
+			],
+		},
+	};
+}
+
+function createPrivateDocumentMessageUpdate(options: { fromId: number }): Update {
+	return {
+		update_id: 5,
+		message: {
+			message_id: 15,
+			date: 1,
+			chat: createPrivateChat(options.fromId),
+			from: createUser(options.fromId),
+			document: {
+				file_id: "document-1",
+				file_unique_id: "document-1-unique",
+				file_name: "note.png",
+				mime_type: "image/png",
 			},
 		},
 	};
