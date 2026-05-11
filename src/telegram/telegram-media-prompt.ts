@@ -10,6 +10,12 @@ import {
 	type PiDocparserRuntimeSupportRequest,
 } from "../pi/pi-docparser-runtime-support.js";
 import type { PiPromptContent } from "../pi/pi-types.js";
+import {
+	createWhisperSpeechToTextTranscriber,
+	requireSpeechToTextConfig,
+	type ResolvedSpeechToTextConfig,
+	type SpeechToTextTranscriber,
+} from "./telegram-speech-to-text.js";
 
 export const DEFAULT_TELEGRAM_MEDIA_PROMPT = "describe this item/doc I am sending in";
 
@@ -19,12 +25,19 @@ export interface ResolvedTelegramMediaPrompt {
 	userPromptText?: string;
 }
 
+export type SpeechToTextProgressStage = "got_audio" | "transcribing" | "got_result";
+
+export interface TelegramMediaPromptRuntimeOptions {
+	onSpeechToTextProgressStage?: (stage: SpeechToTextProgressStage) => Promise<void> | void;
+}
+
 export type PiDocparserAvailabilityChecker = (
 	request: PiDocparserRuntimeSupportRequest,
 ) => Promise<PiDocparserRuntimeSupport>;
 
 export interface TelegramMediaPromptResolverOptions {
 	resolvePiDocparserSupport?: PiDocparserAvailabilityChecker;
+	createSpeechToTextTranscriber?: (config: ResolvedSpeechToTextConfig) => SpeechToTextTranscriber;
 	uploadTempRootPath?: string;
 }
 
@@ -42,8 +55,23 @@ export interface TelegramDocumentLike {
 	mime_type?: string;
 }
 
+export interface TelegramAudioLike {
+	file_id: string;
+	file_unique_id?: string;
+	file_name?: string;
+	mime_type?: string;
+}
+
+export interface TelegramVoiceLike {
+	file_id: string;
+	file_unique_id?: string;
+	mime_type?: string;
+}
+
 export interface TelegramMediaMessageLike {
 	caption?: string;
+	audio?: TelegramAudioLike;
+	voice?: TelegramVoiceLike;
 	photo?: TelegramPhotoSizeLike[];
 	document?: TelegramDocumentLike;
 }
@@ -56,11 +84,13 @@ const GENERIC_BINARY_MIME_TYPES = new Set([
 
 const MIME_TYPES_BY_FILE_EXTENSION: Record<string, string> = {
 	".avif": "image/avif",
+	".aac": "audio/aac",
 	".bmp": "image/bmp",
 	".csv": "text/csv",
 	".doc": "application/msword",
 	".docm": "application/vnd.ms-word.document.macroenabled.12",
 	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	".flac": "audio/flac",
 	".gif": "image/gif",
 	".heic": "image/heic",
 	".heif": "image/heif",
@@ -71,7 +101,11 @@ const MIME_TYPES_BY_FILE_EXTENSION: Record<string, string> = {
 	".jpg": "image/jpeg",
 	".json": "application/json",
 	".log": "text/plain",
+	".m4a": "audio/mp4",
 	".md": "text/markdown",
+	".mp3": "audio/mpeg",
+	".oga": "audio/ogg",
+	".ogg": "audio/ogg",
 	".odp": "application/vnd.oasis.opendocument.presentation",
 	".ods": "application/vnd.oasis.opendocument.spreadsheet",
 	".odt": "application/vnd.oasis.opendocument.text",
@@ -86,6 +120,8 @@ const MIME_TYPES_BY_FILE_EXTENSION: Record<string, string> = {
 	".tiff": "image/tiff",
 	".tsv": "text/tab-separated-values",
 	".txt": "text/plain",
+	".wav": "audio/wav",
+	".webm": "audio/webm",
 	".webp": "image/webp",
 	".xls": "application/vnd.ms-excel",
 	".xlsm": "application/vnd.ms-excel.sheet.macroenabled.12",
@@ -122,12 +158,14 @@ export type TelegramMediaPromptResolver = (
 	message: TelegramMediaMessageLike,
 	config: AppConfig,
 	telegram: Telegram,
+	runtimeOptions?: TelegramMediaPromptRuntimeOptions,
 ) => Promise<ResolvedTelegramMediaPrompt>;
 
 export function createTelegramMediaPromptResolver(
 	options: TelegramMediaPromptResolverOptions = {},
 ): TelegramMediaPromptResolver {
-	return (message, config, telegram) => resolveTelegramMediaPrompt(message, config, telegram, options);
+	return (message, config, telegram, runtimeOptions) =>
+		resolveTelegramMediaPrompt(message, config, telegram, options, runtimeOptions);
 }
 
 async function resolveTelegramMediaPrompt(
@@ -135,6 +173,7 @@ async function resolveTelegramMediaPrompt(
 	config: AppConfig,
 	telegram: Telegram,
 	options: TelegramMediaPromptResolverOptions,
+	runtimeOptions?: TelegramMediaPromptRuntimeOptions,
 ): Promise<ResolvedTelegramMediaPrompt> {
 	const prompt = normalizeMediaPromptText(message.caption);
 	const uploadTempRootPath = options.uploadTempRootPath ?? tmpdir();
@@ -157,6 +196,41 @@ async function resolveTelegramMediaPrompt(
 			cleanup: downloaded.cleanup,
 			userPromptText: prompt,
 		};
+	}
+
+	const audioUpload = resolveTelegramAudioUpload(message);
+	if (audioUpload) {
+		const speechToTextConfig = requireSpeechToTextConfig(config.speechToText);
+		const transcriberFactory = options.createSpeechToTextTranscriber ?? createWhisperSpeechToTextTranscriber;
+		const transcriber = transcriberFactory(speechToTextConfig);
+		const downloaded = await downloadTelegramFile({
+			telegram,
+			telegramBotToken: config.telegramBotToken,
+			fileId: audioUpload.fileId,
+			uploadTempRootPath,
+			preferredMimeType: audioUpload.mimeType,
+			fallbackFileName: audioUpload.fileName,
+		});
+
+		try {
+			await runtimeOptions?.onSpeechToTextProgressStage?.("transcribing");
+			const transcript = await transcriber.transcribe({
+				buffer: downloaded.buffer,
+				filePath: downloaded.filePath,
+				fileName: downloaded.fileName,
+				mimeType: downloaded.mimeType,
+			});
+			await runtimeOptions?.onSpeechToTextProgressStage?.("got_result");
+
+			return {
+				content: transcript,
+				cleanup: downloaded.cleanup,
+				userPromptText: transcript,
+			};
+		} catch (error) {
+			await downloaded.cleanup().catch(() => undefined);
+			throw error;
+		}
 	}
 
 	const document = message.document;
@@ -263,7 +337,7 @@ async function downloadTelegramFile(options: {
 	uploadTempRootPath: string;
 	preferredMimeType: string | undefined;
 	fallbackFileName: string;
-}): Promise<{ buffer: Buffer; filePath: string; mimeType: string; cleanup: () => Promise<void> }> {
+}): Promise<{ buffer: Buffer; fileName: string; filePath: string; mimeType: string; cleanup: () => Promise<void> }> {
 	const file = await options.telegram.getFile(options.fileId);
 	if (!file.file_path) {
 		throw new Error("Telegram did not return a downloadable file path for the uploaded item.");
@@ -300,12 +374,42 @@ async function downloadTelegramFile(options: {
 	const responseMimeType = normalizeMimeType(response.headers.get("content-type"));
 	return {
 		buffer,
+		fileName,
 		filePath,
 		mimeType: resolveDownloadedMimeType(responseMimeType, options.preferredMimeType),
 		cleanup: async () => {
 			await rm(tempDir, { recursive: true, force: true });
 		},
 	};
+}
+
+function resolveTelegramAudioUpload(message: TelegramMediaMessageLike): {
+	fileId: string;
+	fileName: string;
+	mimeType: string;
+} | undefined {
+	if (message.voice) {
+		const voiceMimeType = normalizeMimeType(message.voice.mime_type) ?? "audio/ogg";
+		return {
+			fileId: message.voice.file_id,
+			fileName: `${message.voice.file_unique_id ?? message.voice.file_id}${fileExtensionForMimeType(voiceMimeType) || ".ogg"}`,
+			mimeType: voiceMimeType,
+		};
+	}
+
+	if (message.audio) {
+		const audioMimeType = normalizeMimeType(message.audio.mime_type)
+			?? inferMimeTypeFromFileName(message.audio.file_name)
+			?? "audio/mpeg";
+		return {
+			fileId: message.audio.file_id,
+			fileName: message.audio.file_name
+				?? `${message.audio.file_unique_id ?? message.audio.file_id}${fileExtensionForMimeType(audioMimeType) || ".audio"}`,
+			mimeType: audioMimeType,
+		};
+	}
+
+	return undefined;
 }
 
 function resolveTelegramDocumentRoute(document: TelegramDocumentLike):
@@ -424,7 +528,7 @@ function resolveDownloadedMimeType(
 	preferredMimeType: string | undefined,
 ): string {
 	if (responseMimeType && !isGenericBinaryMimeType(responseMimeType)) {
-		if (shouldPreferConfirmedImageMimeType(responseMimeType, preferredMimeType)) {
+		if (shouldPreferConfirmedMediaMimeType(responseMimeType, preferredMimeType)) {
 			return preferredMimeType;
 		}
 
@@ -434,11 +538,12 @@ function resolveDownloadedMimeType(
 	return preferredMimeType ?? "application/octet-stream";
 }
 
-function shouldPreferConfirmedImageMimeType(
+function shouldPreferConfirmedMediaMimeType(
 	responseMimeType: string,
 	preferredMimeType: string | undefined,
 ): preferredMimeType is string {
-	return isImageMimeType(preferredMimeType) && !isImageMimeType(responseMimeType);
+	return (isImageMimeType(preferredMimeType) && !isImageMimeType(responseMimeType))
+		|| (isAudioMimeType(preferredMimeType) && !isAudioMimeType(responseMimeType));
 }
 
 function normalizeMimeType(contentTypeHeader: string | null | undefined): string | undefined {
@@ -457,6 +562,10 @@ function isGenericBinaryMimeType(mimeType: string | undefined): boolean {
 
 function isImageMimeType(mimeType: string | undefined): mimeType is string {
 	return mimeType?.startsWith("image/") === true;
+}
+
+function isAudioMimeType(mimeType: string | undefined): mimeType is string {
+	return mimeType?.startsWith("audio/") === true;
 }
 
 function sanitizeTelegramFileName(fileName: string): string {
@@ -575,6 +684,22 @@ function fileExtensionForMimeType(mimeType: string | undefined): string {
 	switch (mimeType) {
 		case "application/json":
 			return ".json";
+		case "audio/aac":
+			return ".aac";
+		case "audio/flac":
+			return ".flac";
+		case "audio/mp4":
+		case "audio/x-m4a":
+			return ".m4a";
+		case "audio/mpeg":
+			return ".mp3";
+		case "audio/ogg":
+			return ".ogg";
+		case "audio/wav":
+		case "audio/x-wav":
+			return ".wav";
+		case "audio/webm":
+			return ".webm";
 		case "application/msword":
 			return ".doc";
 		case "application/pdf":

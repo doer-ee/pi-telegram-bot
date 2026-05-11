@@ -42,10 +42,32 @@ describe("shouldRejectUnauthorizedPrivateUpdate", () => {
 		).toBe(true);
 	});
 
+	it("rejects unauthorized private audio messages", () => {
+		expect(
+			shouldRejectUnauthorizedPrivateUpdate(
+				createPrivateAudioMessageUpdate({
+					fromId: UNAUTHORIZED_USER_ID,
+				}),
+				AUTHORIZED_USER_ID,
+			),
+		).toBe(true);
+	});
+
 	it("rejects unauthorized private document messages", () => {
 		expect(
 			shouldRejectUnauthorizedPrivateUpdate(
 				createPrivateDocumentMessageUpdate({
+					fromId: UNAUTHORIZED_USER_ID,
+				}),
+				AUTHORIZED_USER_ID,
+			),
+		).toBe(true);
+	});
+
+	it("rejects unauthorized private voice messages", () => {
+		expect(
+			shouldRejectUnauthorizedPrivateUpdate(
+				createPrivateVoiceMessageUpdate({
 					fromId: UNAUTHORIZED_USER_ID,
 				}),
 				AUTHORIZED_USER_ID,
@@ -123,11 +145,30 @@ function createPrivatePhotoMessageUpdate(options: { fromId: number }): Update {
 	};
 }
 
-function createPrivateDocumentMessageUpdate(options: { fromId: number }): Update {
+function createPrivateAudioMessageUpdate(options: { fromId: number }): Update {
 	return {
 		update_id: 5,
 		message: {
 			message_id: 15,
+			date: 1,
+			chat: createPrivateChat(options.fromId),
+			from: createUser(options.fromId),
+			audio: {
+				duration: 1,
+				file_id: "audio-1",
+				file_unique_id: "audio-1-unique",
+				file_name: "meeting.m4a",
+				mime_type: "audio/mp4",
+			},
+		},
+	};
+}
+
+function createPrivateDocumentMessageUpdate(options: { fromId: number }): Update {
+	return {
+		update_id: 6,
+		message: {
+			message_id: 16,
 			date: 1,
 			chat: createPrivateChat(options.fromId),
 			from: createUser(options.fromId),
@@ -136,6 +177,24 @@ function createPrivateDocumentMessageUpdate(options: { fromId: number }): Update
 				file_unique_id: "document-1-unique",
 				file_name: "note.png",
 				mime_type: "image/png",
+			},
+		},
+	};
+}
+
+function createPrivateVoiceMessageUpdate(options: { fromId: number }): Update {
+	return {
+		update_id: 7,
+		message: {
+			message_id: 17,
+			date: 1,
+			chat: createPrivateChat(options.fromId),
+			from: createUser(options.fromId),
+			voice: {
+				duration: 1,
+				file_id: "voice-1",
+				file_unique_id: "voice-1-unique",
+				mime_type: "audio/ogg",
 			},
 		},
 	};

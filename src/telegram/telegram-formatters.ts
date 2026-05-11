@@ -16,10 +16,11 @@ export function formatHelpText(): string {
 		...getTelegramHelpLines(),
 		"",
 		"Any non-command text message is sent to the selected session.",
+		"Private voice notes and audio files are transcribed through the configured speech-to-text service and the returned transcript is sent as a normal Pi prompt when speech-to-text is enabled and configured.",
 		"Private photos and supported image documents are sent with the image attached to the prompt.",
 		"Plain-text documents (.txt, .md, .json, .csv, .tsv, .log) are staged under the system temp directory and read from disk by Pi.",
 		"Supported PDFs and office documents are staged under the system temp directory and routed through pi-docparser.",
-		"Unsupported documents or parser-unready pi-docparser environments fail explicitly.",
+		"Speech-to-text, unsupported-document, or parser-unready failures are reported explicitly.",
 		"If no session is selected yet, the first freeform message or supported upload creates one automatically.",
 	].join("\n");
 }

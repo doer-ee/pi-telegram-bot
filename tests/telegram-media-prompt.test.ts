@@ -8,6 +8,10 @@ import {
 	createTelegramMediaPromptResolver,
 	DEFAULT_TELEGRAM_MEDIA_PROMPT,
 } from "../src/telegram/telegram-media-prompt.js";
+import {
+	SPEECH_TO_TEXT_NOT_CONFIGURED_MESSAGE,
+	type SpeechToTextUpload,
+} from "../src/telegram/telegram-speech-to-text.js";
 
 describe("createTelegramMediaPromptResolver", () => {
 	afterEach(async () => {
@@ -65,6 +69,179 @@ describe("createTelegramMediaPromptResolver", () => {
 		await resolved.cleanup?.();
 		expect(await readdir(stagingRoot)).toEqual([]);
 
+		await rm(stagingRoot, { recursive: true, force: true });
+	});
+
+	it("downloads private voice notes into the system temp directory and returns a transcript prompt through speech-to-text", async () => {
+		const stagingRoot = await createIsolatedSystemTempRoot();
+		const speechToTextStages: string[] = [];
+		const fetchMock = vi.fn(async () => new Response(Buffer.from("voice-audio-bytes"), {
+			status: 200,
+			headers: { "content-type": "application/octet-stream" },
+		}));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const transcribe = vi.fn(async (upload: {
+			buffer: Buffer;
+			filePath: string;
+			fileName: string;
+			mimeType: string;
+		}) => {
+			expect(upload.fileName).toBe("voice-unique.ogg");
+			expect(upload.mimeType).toBe("audio/ogg");
+			expect(upload.buffer.toString("utf8")).toBe("voice-audio-bytes");
+			expect(await readFile(upload.filePath, "utf8")).toBe("voice-audio-bytes");
+			return "Transcribed standup update";
+		});
+
+		const telegram = {
+			getFile: vi.fn(async () => ({
+				file_id: "voice-note",
+				file_unique_id: "voice-unique",
+				file_size: 4096,
+				file_path: "voice/voice-note.ogg",
+			})),
+		};
+		const resolver = createResolverForSystemTemp(stagingRoot, {
+			createSpeechToTextTranscriber: vi.fn(() => ({ transcribe })),
+		});
+
+		const resolved = await resolver(
+			{
+				voice: {
+					file_id: "voice-note",
+					file_unique_id: "voice-unique",
+					mime_type: "audio/ogg",
+				},
+			},
+			createAppConfig({ speechToText: createSpeechToTextConfig() }),
+			telegram as unknown as Telegram,
+			{
+				onSpeechToTextProgressStage: async (stage) => {
+					speechToTextStages.push(stage);
+				},
+			},
+		);
+
+		expect(fetchMock).toHaveBeenCalledWith("https://api.telegram.org/file/bottest-telegram-token/voice/voice-note.ogg");
+		expect(transcribe).toHaveBeenCalledOnce();
+		expect(speechToTextStages).toEqual(["transcribing", "got_result"]);
+		expect(resolved.content).toBe("Transcribed standup update");
+		expect(resolved.userPromptText).toBe("Transcribed standup update");
+
+		const tmpEntries = await readdir(stagingRoot);
+		expect(tmpEntries).toHaveLength(1);
+		const uploadDirectory = tmpEntries[0];
+		if (!uploadDirectory) {
+			throw new Error("Expected a Telegram upload directory to be created.");
+		}
+		expect(await readFile(join(stagingRoot, uploadDirectory, "voice-unique.ogg"), "utf8")).toBe("voice-audio-bytes");
+
+		await resolved.cleanup?.();
+		expect(await readdir(stagingRoot)).toEqual([]);
+
+		await rm(stagingRoot, { recursive: true, force: true });
+	});
+
+	it("fails with the exact guidance message before download when speech-to-text is missing", async () => {
+		const resolver = createTelegramMediaPromptResolver();
+		const telegram = {
+			getFile: vi.fn(),
+		};
+
+		await expect(
+			resolver(
+				{
+					audio: {
+						file_id: "meeting-audio",
+						file_unique_id: "meeting-audio-unique",
+						file_name: "meeting.m4a",
+						mime_type: "audio/mp4",
+					},
+				},
+				createAppConfig(),
+				telegram as unknown as Telegram,
+			),
+		).rejects.toThrow(SPEECH_TO_TEXT_NOT_CONFIGURED_MESSAGE);
+		expect(telegram.getFile).not.toHaveBeenCalled();
+	});
+
+	it("fails with the exact guidance message before download when speech-to-text is disabled", async () => {
+		const resolver = createTelegramMediaPromptResolver();
+		const telegram = {
+			getFile: vi.fn(),
+		};
+
+		await expect(
+			resolver(
+				{
+					audio: {
+						file_id: "meeting-audio",
+						file_unique_id: "meeting-audio-unique",
+						file_name: "meeting.m4a",
+						mime_type: "audio/mp4",
+					},
+				},
+				createAppConfig({
+					speechToText: {
+						...createSpeechToTextConfig(),
+						enabled: false,
+					},
+				}),
+				telegram as unknown as Telegram,
+			),
+		).rejects.toThrow(SPEECH_TO_TEXT_NOT_CONFIGURED_MESSAGE);
+		expect(telegram.getFile).not.toHaveBeenCalled();
+	});
+
+	it("cleans up staged audio immediately when speech-to-text fails after download", async () => {
+		const stagingRoot = await createIsolatedSystemTempRoot();
+		const speechToTextStages: string[] = [];
+		const fetchMock = vi.fn(async () => new Response(Buffer.from("failed-audio-bytes"), {
+			status: 200,
+			headers: { "content-type": "audio/mp4" },
+		}));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const telegram = {
+			getFile: vi.fn(async () => ({
+				file_id: "meeting-audio",
+				file_unique_id: "meeting-audio-unique",
+				file_size: 4096,
+				file_path: "audio/meeting.m4a",
+			})),
+		};
+		const resolver = createResolverForSystemTemp(stagingRoot, {
+			createSpeechToTextTranscriber: vi.fn(() => ({
+				transcribe: async (upload: SpeechToTextUpload) => {
+					expect(await readFile(upload.filePath, "utf8")).toBe("failed-audio-bytes");
+					throw new Error("Speech-to-text upstream failed.");
+				},
+			})),
+		});
+
+		await expect(
+			resolver(
+				{
+					audio: {
+						file_id: "meeting-audio",
+						file_unique_id: "meeting-audio-unique",
+						file_name: "meeting.m4a",
+						mime_type: "audio/mp4",
+					},
+			},
+			createAppConfig({ speechToText: createSpeechToTextConfig() }),
+			telegram as unknown as Telegram,
+			{
+				onSpeechToTextProgressStage: async (stage) => {
+					speechToTextStages.push(stage);
+				},
+			},
+			),
+		).rejects.toThrow("Speech-to-text upstream failed.");
+
+		expect(speechToTextStages).toEqual(["transcribing"]);
+		expect(await readdir(stagingRoot)).toEqual([]);
 		await rm(stagingRoot, { recursive: true, force: true });
 	});
 
@@ -748,7 +925,7 @@ function createPiDocparserSupport() {
 	};
 }
 
-function createAppConfig(): AppConfig {
+function createAppConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 	return {
 		telegramBotToken: "test-telegram-token",
 		authorizedTelegramUserId: 101,
@@ -758,6 +935,18 @@ function createAppConfig(): AppConfig {
 		titleRefinementModel: "openai/gpt-5-mini",
 		streamThrottleMs: 1000,
 		telegramChunkSize: 3500,
+		...overrides,
+	};
+}
+
+function createSpeechToTextConfig() {
+	return {
+		enabled: true,
+		baseUrl: "http://10.24.200.204:8000",
+		endpointPath: "/transcribe",
+		model: "whisper-1",
+		prompt: "Transcribe the user's Telegram audio exactly and return only the transcript.",
+		timeoutMs: 60000,
 	};
 }
 

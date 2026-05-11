@@ -63,7 +63,10 @@ export interface PromptResult {
 
 export interface PromptRunOptions {
 	userPromptText?: string;
+	reservation?: PromptRunReservation;
 }
+
+export type PromptRunReservation = symbol;
 
 export interface ActiveSessionInfo {
 	path: string;
@@ -82,6 +85,7 @@ export interface SessionCoordinatorOptions {
 interface ActiveRun {
 	sessionPath: string;
 	abortRequested: boolean;
+	reservation?: PromptRunReservation;
 }
 
 export class SessionCoordinator {
@@ -318,13 +322,8 @@ export class SessionCoordinator {
 		observer?: PromptObserver,
 		options?: PromptRunOptions,
 	): Promise<PromptResult> {
-		this.assertIdle();
 		const text = resolvePromptTextForSessionMetadata(content, options?.userPromptText);
-		const activeRun: ActiveRun = {
-			sessionPath: this.selectedSession?.path ?? "pending-session-selection",
-			abortRequested: false,
-		};
-		this.activeRun = activeRun;
+		const activeRun = this.claimOrCreateActiveRun(options?.reservation);
 
 		let selectedSession: SessionCatalogEntry | undefined;
 		let unsubscribeAssistantEvents: (() => void) | undefined;
@@ -401,6 +400,27 @@ export class SessionCoordinator {
 				this.activeRun = undefined;
 			}
 		}
+	}
+
+	reservePromptRun(): PromptRunReservation {
+		this.assertIdle();
+
+		const reservation = Symbol("prompt-run-reservation");
+		this.activeRun = {
+			sessionPath: this.selectedSession?.path ?? "pending-session-selection",
+			abortRequested: false,
+			reservation,
+		};
+
+		return reservation;
+	}
+
+	releasePromptRunReservation(reservation: PromptRunReservation): void {
+		if (this.activeRun?.reservation !== reservation) {
+			return;
+		}
+
+		this.activeRun = undefined;
 	}
 
 	async abortActiveRun(): Promise<boolean> {
@@ -674,6 +694,30 @@ export class SessionCoordinator {
 		if (this.isBusy()) {
 			throw new BusySessionError();
 		}
+	}
+
+	private claimOrCreateActiveRun(reservation: PromptRunReservation | undefined): ActiveRun {
+		if (reservation !== undefined) {
+			const activeRun = this.activeRun;
+			if (!activeRun || activeRun.reservation !== reservation) {
+				if (this.isBusy()) {
+					throw new BusySessionError();
+				}
+
+				throw new Error("Prompt run reservation is no longer active.");
+			}
+
+			delete activeRun.reservation;
+			return activeRun;
+		}
+
+		this.assertIdle();
+		const activeRun: ActiveRun = {
+			sessionPath: this.selectedSession?.path ?? "pending-session-selection",
+			abortRequested: false,
+		};
+		this.activeRun = activeRun;
+		return activeRun;
 	}
 }
 

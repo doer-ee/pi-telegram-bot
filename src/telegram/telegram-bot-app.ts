@@ -23,6 +23,7 @@ import {
 } from "../session/session-errors.js";
 import {
 	type SessionCatalogEntry,
+	type PromptRunReservation,
 	SessionCoordinator,
 } from "../session/session-coordinator.js";
 import {
@@ -63,9 +64,11 @@ import { sendStandaloneTelegramText } from "./send-telegram-text.js";
 import {
 	createTelegramMediaPromptResolver,
 	type ResolvedTelegramMediaPrompt,
+	type SpeechToTextProgressStage,
 	type TelegramMediaMessageLike,
 	type TelegramMediaPromptResolver,
 } from "./telegram-media-prompt.js";
+import { SpeechToTextError } from "./telegram-speech-to-text.js";
 
 type BotContext = Context<Update>;
 type MessageUpdate = Extract<Update, { message: unknown }>;
@@ -125,6 +128,43 @@ interface PendingRenameState {
 
 interface TelegramBotAppOptions {
 	mediaPromptResolver?: TelegramMediaPromptResolver;
+}
+
+class TelegramSpeechToTextProgressNotice {
+	private messageId: number | undefined;
+	private stage: SpeechToTextProgressStage = "got_audio";
+
+	constructor(
+		private readonly client: TelegramMessageClient,
+		private readonly chatId: number,
+	) {}
+
+	async start(): Promise<void> {
+		if (this.messageId !== undefined) {
+			return;
+		}
+
+		this.messageId = await this.client.sendText(
+			this.chatId,
+			formatSpeechToTextProgressNotice(this.stage),
+			{ silent: true },
+		);
+	}
+
+	async advance(stage: SpeechToTextProgressStage): Promise<void> {
+		if (this.messageId === undefined) {
+			this.stage = stage;
+			await this.start();
+			return;
+		}
+
+		if (this.stage === stage) {
+			return;
+		}
+
+		this.stage = stage;
+		await this.client.editText(this.chatId, this.messageId, formatSpeechToTextProgressNotice(stage));
+	}
 }
 
 type PendingScheduleState =
@@ -759,7 +799,15 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 			await this.handleMediaPromptMessage(ctx, ctx.message);
 		});
 
+		this.bot.on("audio", async (ctx) => {
+			await this.handleMediaPromptMessage(ctx, ctx.message);
+		});
+
 		this.bot.on("document", async (ctx) => {
+			await this.handleMediaPromptMessage(ctx, ctx.message);
+		});
+
+		this.bot.on("voice", async (ctx) => {
 			await this.handleMediaPromptMessage(ctx, ctx.message);
 		});
 
@@ -805,8 +853,59 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 				throw new Error("Could not determine the private chat for this media prompt.");
 			}
 
-			const resolvedPrompt = await this.mediaPromptResolver(message, this.config, this.bot.telegram);
-			this.launchDetachedPromptRun(chatId, resolvedPrompt.content, resolvedPrompt.cleanup, resolvedPrompt.userPromptText);
+			const client = createTelegramMessageClient(this.bot.telegram);
+			const speechToTextProgressNotice = isSpeechToTextMessage(message)
+				? new TelegramSpeechToTextProgressNotice(client, chatId)
+				: undefined;
+			const promptReservation = speechToTextProgressNotice ? this.coordinator.reservePromptRun() : undefined;
+			let resolvedPrompt: ResolvedTelegramMediaPrompt | undefined;
+
+			try {
+				if (speechToTextProgressNotice) {
+					await speechToTextProgressNotice.start();
+				}
+
+				resolvedPrompt = await this.mediaPromptResolver(
+					message,
+					this.config,
+					this.bot.telegram,
+					speechToTextProgressNotice
+						? {
+							onSpeechToTextProgressStage: async (stage) => {
+								await speechToTextProgressNotice.advance(stage);
+							},
+						}
+						: undefined,
+				);
+
+				if (speechToTextProgressNotice) {
+					await sendStandaloneTelegramText(
+						client,
+						chatId,
+						formatSpeechToTextTranscriptText(resolveSpeechToTextTranscriptText(resolvedPrompt)),
+						"plain",
+						this.config.telegramChunkSize,
+					);
+				}
+			} catch (error) {
+				await this.cleanupMediaPromptArtifacts(resolvedPrompt?.cleanup);
+				if (promptReservation) {
+					this.coordinator.releasePromptRunReservation(promptReservation);
+				}
+				throw error;
+			}
+
+			if (!resolvedPrompt) {
+				throw new Error("Could not resolve the Telegram media prompt.");
+			}
+
+			this.launchDetachedPromptRun(
+				chatId,
+				resolvedPrompt.content,
+				resolvedPrompt.cleanup,
+				resolvedPrompt.userPromptText,
+				promptReservation,
+			);
 		});
 	}
 
@@ -815,6 +914,7 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 		content: PiPromptContent,
 		cleanup?: ResolvedTelegramMediaPrompt["cleanup"],
 		userPromptText?: string,
+		reservation?: PromptRunReservation,
 	): void {
 		const client = createTelegramMessageClient(this.bot.telegram);
 		const streamer = new TelegramReplyStreamer(client, chatId, {
@@ -828,7 +928,10 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 			onAssistantText: (assistantText) => {
 				streamer.pushText(assistantText);
 			},
-		}, userPromptText ? { userPromptText } : undefined);
+		}, {
+			...(userPromptText ? { userPromptText } : {}),
+			...(reservation ? { reservation } : {}),
+		});
 		const runPromise = this.runDetachedPrompt(promptPromise, streamer, client, chatId, cleanup);
 		this.trackInFlightPromptRun(runPromise);
 	}
@@ -861,13 +964,19 @@ if (changed && refreshedConfirmationText !== existingConfirmationText) {
 			});
 		} finally {
 			await settledPromptPromise;
-			if (cleanup) {
-				try {
-					await cleanup();
-				} catch (cleanupError) {
-					console.error("[pi-telegram-bot] Failed to clean up Telegram media prompt artifacts:", cleanupError);
-				}
-			}
+			await this.cleanupMediaPromptArtifacts(cleanup);
+		}
+	}
+
+	private async cleanupMediaPromptArtifacts(cleanup?: () => Promise<void>): Promise<void> {
+		if (!cleanup) {
+			return;
+		}
+
+		try {
+			await cleanup();
+		} catch (cleanupError) {
+			console.error("[pi-telegram-bot] Failed to clean up Telegram media prompt artifacts:", cleanupError);
 		}
 	}
 
@@ -1397,6 +1506,40 @@ function isSameModel(left: PiModelDescriptor, right: PiModelDescriptor | undefin
 	return right !== undefined && left.provider === right.provider && left.id === right.id;
 }
 
+function isSpeechToTextMessage(message: TelegramMediaMessageLike): boolean {
+	return message.audio !== undefined || message.voice !== undefined;
+}
+
+function formatSpeechToTextProgressNotice(stage: SpeechToTextProgressStage): string {
+	const progressEntries = ["Got audio"];
+	if (stage === "transcribing" || stage === "got_result") {
+		progressEntries.push("Transcribing");
+	}
+	if (stage === "got_result") {
+		progressEntries.push("Got result");
+	}
+
+	return ["Speech to text...", ...progressEntries.map((entry) => `• ${entry}`)].join("\n");
+}
+
+function resolveSpeechToTextTranscriptText(resolvedPrompt: ResolvedTelegramMediaPrompt): string {
+	const transcript = typeof resolvedPrompt.userPromptText === "string" && resolvedPrompt.userPromptText.trim().length > 0
+		? resolvedPrompt.userPromptText
+		: typeof resolvedPrompt.content === "string"
+			? resolvedPrompt.content
+			: undefined;
+
+	if (!transcript || transcript.trim().length === 0) {
+		throw new Error("Speech to text completed, but no transcript text was available to show.");
+	}
+
+	return transcript;
+}
+
+function formatSpeechToTextTranscriptText(transcript: string): string {
+	return `Transcript:\n${transcript}`;
+}
+
 function isCallbackContext(ctx: BotContext): boolean {
 	return "callback_query" in ctx.update;
 }
@@ -1463,6 +1606,7 @@ function formatUserFacingError(error: unknown): string {
 		error instanceof ModelNotAvailableError ||
 		error instanceof NoSelectedSessionError ||
 		error instanceof SelectedModelUnavailableError ||
+		error instanceof SpeechToTextError ||
 		error instanceof SessionNotFoundError
 	) {
 		return error.message;

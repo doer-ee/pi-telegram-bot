@@ -31,6 +31,7 @@ Telegram works well here because it's fast on mobile, has reliable push notifica
 - lets you change the current session's active conversation model with `/model`
 - supports `/new`, `/sessions`, `/current`, `/rename`, `/status`, and `/abort`
 - supports interactive scheduling with `/schedule`, `/schedules`, `/unschedule`, and `/runscheduled`
+- can transcribe private Telegram voice notes and audio uploads through an opt-in Whisper-style STT service, then send the returned transcript as a normal Pi prompt
 - accepts private Telegram photos and supported image documents as direct image prompts
 - saves supported plain-text documents under the system temp directory and has Pi read them from disk
 - saves supported PDFs and office documents under the system temp directory and routes them through `pi-docparser`
@@ -72,6 +73,7 @@ In Telegram, message your bot:
 - a Telegram bot token from BotFather
 - your numeric Telegram user ID
 - a local Pi setup that already works on this machine
+- network reachability from the bot host to the configured speech-to-text service if you opt into Telegram voice-note or audio transcription
 - the `pi-docparser` Pi package installed in the same Pi environment the bot uses if you want parser-backed PDF or office-document uploads
 - LibreOffice installed if you want parser-backed Office or spreadsheet uploads on macOS/Linux
 
@@ -134,6 +136,19 @@ PI_WORKSPACE_PATH=/absolute/path/to/your/pi-workspace
 BOT_STATE_PATH=./data/state.json
 ```
 
+Optional voice/audio STT setup:
+
+```dotenv
+TELEGRAM_STT_ENABLED=true
+TELEGRAM_STT_BASE_URL=http://10.24.200.204:8000
+# Optional overrides:
+# TELEGRAM_STT_ENDPOINT_PATH=/transcribe
+# TELEGRAM_STT_MODEL=whisper-1
+# TELEGRAM_STT_PROMPT=Transcribe the user's Telegram audio exactly and return only the transcript.
+# TELEGRAM_STT_API_KEY=
+# TELEGRAM_STT_TIMEOUT_MS=60000
+```
+
 ### 5. Start the bot
 
 Development:
@@ -190,6 +205,13 @@ Important: do not set `PI_TELEGRAM_BOT_ENV_PATH` inside `.env`. That value has t
 | `PI_SESSION_TITLE_REFINEMENT_MODEL` | No | Background-only model for session-title refinement. | Defaults to `openai/gpt-5.4-mini`; provider-qualified values are recommended. |
 | `TELEGRAM_STREAM_THROTTLE_MS` | No | Minimum delay between streamed reply updates. | Default `1000`, minimum `250`. |
 | `TELEGRAM_CHUNK_SIZE` | No | Max characters per Telegram message chunk. | Default `3500`, valid range `512` to `4000`. |
+| `TELEGRAM_STT_ENABLED` | No | Opts into Telegram voice-note and audio transcription. | STT stays unconfigured unless this is explicitly set to `true`. |
+| `TELEGRAM_STT_BASE_URL` | No | Base URL for the Whisper-style STT service. | Used only when STT is enabled. Defaults to `http://10.24.200.204:8000`. |
+| `TELEGRAM_STT_ENDPOINT_PATH` | No | Endpoint path appended to the STT base URL. | Used only when STT is enabled. Defaults to `/transcribe`. |
+| `TELEGRAM_STT_MODEL` | No | Model value sent to the STT service. | Used only when STT is enabled. Defaults to `whisper-1`. Override to `whisper` if your service expects that name. |
+| `TELEGRAM_STT_PROMPT` | No | Generic prompt sent with each STT request. | Used only when STT is enabled. Defaults to `Transcribe the user's Telegram audio exactly and return only the transcript.` |
+| `TELEGRAM_STT_API_KEY` | No | Optional bearer token for the STT service. | Used only when STT is enabled. Leave blank for the current local service. |
+| `TELEGRAM_STT_TIMEOUT_MS` | No | Timeout for each STT request. | Used only when STT is enabled. Default `60000`, minimum `1000`. |
 
 Relative paths resolve from the current working directory. If you run the app from the repo root, the default `BOT_STATE_PATH=./data/state.json` stays inside this project.
 
@@ -216,6 +238,7 @@ Available commands:
 Behavior notes:
 
 - any non-command text message is sent to the selected session
+- private Telegram voice notes and audio uploads are transcribed through the configured speech-to-text service and the returned transcript is sent as a normal text prompt when STT is enabled
 - private Telegram photos and supported image documents are sent to Pi with the image attached
 - supported plain-text documents (`.txt`, `.md`, `.json`, `.csv`, `.tsv`, `.log`) are staged under the system temp directory and read from disk by Pi
 - supported PDFs and office documents are staged under the system temp directory and routed through `pi-docparser`
@@ -384,6 +407,16 @@ Check these in order:
 3. For Office or spreadsheet files, LibreOffice is installed (`brew install --cask libreoffice` on macOS).
 
 Plain-text uploads still use the normal file-read path, but PDFs and other parser-backed documents require a working `pi-docparser` package/tool environment before they are sent to Pi.
+
+### Voice notes or audio uploads fail immediately
+
+Check these in order:
+
+1. `TELEGRAM_STT_ENABLED=true` is set explicitly. STT is unconfigured by default.
+2. `TELEGRAM_STT_BASE_URL`, `TELEGRAM_STT_ENDPOINT_PATH`, and `TELEGRAM_STT_MODEL` still match the service you intend to use.
+3. The bot host can reach the STT service at the configured URL.
+
+If STT is disabled or not configured, the bot replies with: `Speech to text is not configured. Please configure it first.`
 
 ### The service does not start
 

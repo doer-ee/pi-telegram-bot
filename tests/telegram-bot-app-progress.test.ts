@@ -26,6 +26,7 @@ import {
 import { SessionPinSync } from "../src/telegram/session-pin-sync.js";
 import { TelegramBotApp } from "../src/telegram/telegram-bot-app.js";
 import { DEFAULT_TELEGRAM_MEDIA_PROMPT } from "../src/telegram/telegram-media-prompt.js";
+import { SpeechToTextError, SpeechToTextNotConfiguredError } from "../src/telegram/telegram-speech-to-text.js";
 
 const AUTHORIZED_USER_ID = 101;
 const CHAT_ID = 101;
@@ -307,6 +308,294 @@ describe("TelegramBotApp prompt progress behavior", () => {
 				{ type: "image", data: "ZmFrZS1waG90bw==", mimeType: "image/jpeg" },
 			],
 		]);
+
+		await app.stop();
+	});
+
+	it("shows speech-to-text progress and the transcript before the normal Pi run flow for private voice notes", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async (_message, _config, _telegram, runtimeOptions) => {
+				await runtimeOptions?.onSpeechToTextProgressStage?.("transcribing");
+				await runtimeOptions?.onSpeechToTextProgressStage?.("got_result");
+				return {
+					content: "Please summarize this standup update",
+					userPromptText: "Please summarize this standup update",
+				};
+			},
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createVoiceUpdate());
+		await waitUntil(() => hasSentText(apiCalls, "reply:Please summarize this standup update"));
+
+		expect(apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Speech to text...\n• Got audio",
+					disable_notification: true,
+				},
+			},
+			{
+				method: "editMessageText",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: PROGRESS_MESSAGE_ID,
+					inline_message_id: undefined,
+					text: "Speech to text...\n• Got audio\n• Transcribing",
+				},
+			},
+			{
+				method: "editMessageText",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: PROGRESS_MESSAGE_ID,
+					inline_message_id: undefined,
+					text: "Speech to text...\n• Got audio\n• Transcribing\n• Got result",
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Transcript:\nPlease summarize this standup update",
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Thinking...",
+					disable_notification: true,
+				},
+			},
+			{
+				method: "editMessageText",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: PROGRESS_MESSAGE_ID + 2,
+					inline_message_id: undefined,
+					text: "Completed.",
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "reply:Please summarize this standup update",
+					parse_mode: "MarkdownV2",
+				},
+			},
+		]);
+
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([
+			"Please summarize this standup update",
+		]);
+
+		await app.stop();
+	});
+
+	it("routes private audio uploads through the detached prompt flow with the speech-to-text transcript", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async (_message, _config, _telegram, runtimeOptions) => {
+				await runtimeOptions?.onSpeechToTextProgressStage?.("transcribing");
+				await runtimeOptions?.onSpeechToTextProgressStage?.("got_result");
+				return {
+					content: "Extract the action items from this audio file",
+					userPromptText: "Extract the action items from this audio file",
+				};
+			},
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createAudioUpdate());
+		await waitUntil(() => hasSentText(apiCalls, "reply:Extract the action items from this audio file"));
+
+		expect(hasProgressText(apiCalls, "Speech to text...\n• Got audio\n• Transcribing\n• Got result")).toBe(true);
+		expect(hasSentText(apiCalls, "Transcript:\nExtract the action items from this audio file")).toBe(true);
+		expect(findApiCallIndex(apiCalls, "sendMessage", "Transcript:\nExtract the action items from this audio file")).toBeLessThan(
+			findApiCallIndex(apiCalls, "sendMessage", "Thinking..."),
+		);
+
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([
+			"Extract the action items from this audio file",
+		]);
+
+		await app.stop();
+	});
+
+	it("rejects a second prompt while a first voice message is still in the STT phase", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const sttPhaseGate = createDeferred<void>();
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+
+		let mediaResolverCalls = 0;
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async (message, _config, _telegram, runtimeOptions) => {
+				mediaResolverCalls += 1;
+				if (message.voice) {
+					await runtimeOptions?.onSpeechToTextProgressStage?.("transcribing");
+					await sttPhaseGate.promise;
+					await runtimeOptions?.onSpeechToTextProgressStage?.("got_result");
+					return {
+						content: "Summarize this blocked voice note",
+						userPromptText: "Summarize this blocked voice note",
+					};
+				}
+
+				return {
+					content: [
+						{ type: "text", text: message.caption ?? DEFAULT_TELEGRAM_MEDIA_PROMPT },
+						{ type: "image", data: "ZmFrZS1waG90bw==", mimeType: "image/jpeg" },
+					],
+				};
+			},
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		const firstHandleUpdatePromise = bot.handleUpdate(createVoiceUpdate());
+		await waitUntil(() => hasProgressText(apiCalls, "Speech to text...\n• Got audio\n• Transcribing"));
+
+		apiCalls.length = 0;
+		await bot.handleUpdate(createPromptUpdate("Second prompt while STT is busy", 2));
+
+		expect(apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "A Pi run is already active. Abort it before sending another prompt or changing sessions or models.",
+				},
+			},
+		]);
+		expect(mediaResolverCalls).toBe(1);
+		expect(coordinator.isBusy()).toBe(true);
+
+		sttPhaseGate.resolve();
+		await firstHandleUpdatePromise;
+		await waitUntil(() => hasSentText(apiCalls, "reply:Summarize this blocked voice note"));
+
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([
+			"Summarize this blocked voice note",
+		]);
+
+		await app.stop();
+	});
+
+	it("returns the exact speech-to-text guidance when private audio arrives without configured speech-to-text", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		await coordinator.createNewSession();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async () => {
+				throw new SpeechToTextNotConfiguredError();
+			},
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createAudioUpdate());
+
+		expect(apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Speech to text...\n• Got audio",
+					disable_notification: true,
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Speech to text is not configured. Please configure it first.",
+				},
+			},
+		]);
+
+		await app.stop();
+	});
+
+	it("does not show a fake speech-to-text result state when audio transcription fails", async () => {
+		const apiCalls: TelegramApiCall[] = [];
+		restoreTelegramApi = interceptTelegramApi(apiCalls);
+
+		const runtimeFactory = new MockPiRuntimeFactory();
+		const coordinator = new SessionCoordinator("/workspace", createAppStateStoreStub(), runtimeFactory);
+		await coordinator.initialize();
+		const session = await coordinator.createNewSession();
+
+		const app = new TelegramBotApp(createAppConfig(), coordinator, createSessionPinSync(), undefined, undefined, {
+			mediaPromptResolver: async (_message, _config, _telegram, runtimeOptions) => {
+				await runtimeOptions?.onSpeechToTextProgressStage?.("transcribing");
+				throw new SpeechToTextError("Speech to text request failed: upstream unavailable");
+			},
+		});
+		const bot = Reflect.get(app, "bot") as InternalTelegrafBot;
+		Reflect.set(bot, "botInfo", createBotInfo());
+
+		await bot.handleUpdate(createAudioUpdate());
+
+		expect(apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Speech to text...\n• Got audio",
+					disable_notification: true,
+				},
+			},
+			{
+				method: "editMessageText",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: PROGRESS_MESSAGE_ID,
+					inline_message_id: undefined,
+					text: "Speech to text...\n• Got audio\n• Transcribing",
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "Speech to text request failed: upstream unavailable",
+				},
+			},
+		]);
+		expect(hasProgressText(apiCalls, "Speech to text...\n• Got audio\n• Transcribing\n• Got result")).toBe(false);
+		expect(hasSentText(apiCalls, "Transcript:\nExtract the action items from this audio file")).toBe(false);
+		expect(runtimeFactory.getSession(session.path)?.promptPayloads).toEqual([]);
 
 		await app.stop();
 	});
@@ -891,11 +1180,31 @@ function createPhotoUpdate(caption: string | undefined, updateId = 1): Update {
 	};
 }
 
-function createDocumentUpdate(options: { fileName: string; mimeType: string; caption?: string }, updateId = 1): Update {
+function createAudioUpdate(updateId = 1): Update {
 	return {
 		update_id: updateId,
 		message: {
 			message_id: 12,
+			date: 1,
+			chat: createPrivateChat(),
+			from: createAuthorizedUser(),
+			audio: {
+				duration: 1,
+				file_id: "audio-meeting",
+				file_unique_id: "audio-meeting-unique",
+				file_name: "meeting.m4a",
+				mime_type: "audio/mp4",
+				file_size: 4096,
+			},
+		},
+	};
+}
+
+function createDocumentUpdate(options: { fileName: string; mimeType: string; caption?: string }, updateId = 1): Update {
+	return {
+		update_id: updateId,
+		message: {
+			message_id: 13,
 			date: 1,
 			chat: createPrivateChat(),
 			from: createAuthorizedUser(),
@@ -905,6 +1214,25 @@ function createDocumentUpdate(options: { fileName: string; mimeType: string; cap
 				file_unique_id: `document-unique-${options.fileName}`,
 				file_name: options.fileName,
 				mime_type: options.mimeType,
+				file_size: 2048,
+			},
+		},
+	};
+}
+
+function createVoiceUpdate(updateId = 1): Update {
+	return {
+		update_id: updateId,
+		message: {
+			message_id: 14,
+			date: 1,
+			chat: createPrivateChat(),
+			from: createAuthorizedUser(),
+			voice: {
+				duration: 1,
+				file_id: "voice-note",
+				file_unique_id: "voice-note-unique",
+				mime_type: "audio/ogg",
 				file_size: 2048,
 			},
 		},
@@ -1220,6 +1548,10 @@ function hasProgressText(apiCalls: TelegramApiCall[], text: string): boolean {
 
 function countSentTexts(apiCalls: TelegramApiCall[], text: string): number {
 	return apiCalls.filter((call) => call.method === "sendMessage" && getPayloadText(call.payload) === text).length;
+}
+
+function findApiCallIndex(apiCalls: TelegramApiCall[], method: string, text: string): number {
+	return apiCalls.findIndex((call) => call.method === method && getPayloadText(call.payload) === text);
 }
 
 function getPayloadText(payload: unknown): string | undefined {
