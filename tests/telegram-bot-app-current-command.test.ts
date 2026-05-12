@@ -29,6 +29,7 @@ import {
 	SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX,
 	SCHEDULED_TASK_RUN_CONFIRM_CALLBACK_PREFIX,
 	SCHEDULED_TASK_RUN_SELECT_CALLBACK_PREFIX,
+	SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX,
 	SCHEDULED_TASK_UNSCHEDULE_CONFIRM_CALLBACK_PREFIX,
 	SCHEDULED_TASK_UNSCHEDULE_SELECT_CALLBACK_PREFIX,
 	TelegramBotApp,
@@ -322,6 +323,111 @@ it("creates a frozen current-session scheduled task through the menu flow and sk
 		const lastPayload = harness.apiCalls[harness.apiCalls.length - 1]?.payload as { text: string };
 		expect(lastPayload.text).toContain("Could not understand that schedule in the server local timezone");
 		expect(lastPayload.text).toContain("every month");
+	});
+
+	it("opens a paginated /schedules menu with prompt-view buttons and a cancel button", async () => {
+		const scheduler = new TestScheduledTaskService(createScheduledTasks(7));
+		const harness = createTelegramBotAppHarness(createCurrentSession({ name: "Selected session" }), scheduler);
+
+		await harness.handleUpdate(createCommandUpdate("/schedules"));
+
+		expect(harness.apiCalls[0]).toMatchObject({
+			method: "sendMessage",
+			payload: {
+				chat_id: CHAT_ID,
+				text: expect.stringContaining("Select a scheduled task to view (page 1/2):"),
+				reply_markup: {
+					inline_keyboard: [
+						[{ text: "task-0000 | scheduled prompt 0", callback_data: `${SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX}${createScheduledTaskToken(scheduler.tasks[0]!)}`, hide: false }],
+						[{ text: "task-0001 | scheduled prompt 1", callback_data: `${SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX}${createScheduledTaskToken(scheduler.tasks[1]!)}`, hide: false }],
+						[{ text: "task-0002 | scheduled prompt 2", callback_data: `${SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX}${createScheduledTaskToken(scheduler.tasks[2]!)}`, hide: false }],
+						[{ text: "task-0003 | scheduled prompt 3", callback_data: `${SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX}${createScheduledTaskToken(scheduler.tasks[3]!)}`, hide: false }],
+						[{ text: "task-0004 | scheduled prompt 4", callback_data: `${SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX}${createScheduledTaskToken(scheduler.tasks[4]!)}`, hide: false }],
+						[{ text: "Next page", callback_data: `${SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX}schedules:1`, hide: false }],
+						[{ text: "cancel", callback_data: SCHEDULED_TASK_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+					],
+				},
+			},
+		});
+		const firstPayload = harness.apiCalls[0]?.payload as { reply_markup: { inline_keyboard: Array<Array<{ text: string }>> } };
+		expect(firstPayload.reply_markup.inline_keyboard).toHaveLength(7);
+		expect(JSON.stringify(harness.apiCalls[0])).not.toContain("Last page");
+	});
+
+	it("pages /schedules and posts the selected saved prompt without running the task", async () => {
+		const scheduler = new TestScheduledTaskService(createScheduledTasks(6));
+		const harness = createTelegramBotAppHarness(createCurrentSession({ name: "Selected session" }), scheduler);
+		const selectedTask = scheduler.tasks[5]!;
+		const token = createScheduledTaskToken(selectedTask);
+
+		await harness.handleUpdate(createCommandUpdate("/schedules"));
+		harness.apiCalls.length = 0;
+
+		await harness.handleUpdate(createCallbackUpdate(`${SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX}schedules:1`, "schedules-page"));
+		expect(harness.apiCalls[0]).toMatchObject({
+			method: "editMessageText",
+			payload: {
+				chat_id: CHAT_ID,
+				message_id: CURRENT_MESSAGE_ID,
+				text: expect.stringContaining("Select a scheduled task to view (page 2/2):"),
+				reply_markup: {
+					inline_keyboard: expect.arrayContaining([
+						[{ text: "Last page", callback_data: `${SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX}schedules:0`, hide: false }],
+						[{ text: "cancel", callback_data: SCHEDULED_TASK_SELECTION_CANCEL_CALLBACK_DATA, hide: false }],
+					]),
+				},
+			},
+		});
+
+		harness.apiCalls.length = 0;
+		await harness.handleUpdate(createCallbackUpdate(`${SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX}${token}`, "schedules-select"));
+
+		expect(scheduler.runReferences).toEqual([]);
+		expect(scheduler.deletedReferences).toEqual([]);
+		expect(harness.apiCalls).toEqual([
+			{
+				method: "editMessageReplyMarkup",
+				payload: {
+					chat_id: CHAT_ID,
+					message_id: CURRENT_MESSAGE_ID,
+					reply_markup: undefined,
+				},
+			},
+			{
+				method: "answerCallbackQuery",
+				payload: {
+					callback_query_id: "schedules-select",
+					text: "Prompt posted.",
+				},
+			},
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: selectedTask.prompt,
+				},
+			},
+		]);
+		expect(harness.apiCalls.find((call) => call.method === "editMessageText")).toBeUndefined();
+	});
+
+	it("keeps the /schedules empty state truthful", async () => {
+		const harness = createTelegramBotAppHarness(
+			createCurrentSession({ name: "Selected session" }),
+			new TestScheduledTaskService([]),
+		);
+
+		await harness.handleUpdate(createCommandUpdate("/schedules"));
+
+		expect(harness.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				payload: {
+					chat_id: CHAT_ID,
+					text: "No scheduled tasks.",
+				},
+			},
+		]);
 	});
 
 	it("opens a paginated unschedule menu with five tasks per page and a cancel button", async () => {

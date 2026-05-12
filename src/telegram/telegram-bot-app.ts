@@ -47,7 +47,6 @@ import {
 	formatScheduledTaskDeletedText,
 	formatScheduledTaskRunQueuedText,
 	formatScheduledTaskSelectionText,
-	formatScheduledTasksText,
 	formatSelectionChangedText,
 	formatSessionsText,
 	formatStartText,
@@ -114,13 +113,15 @@ export const SCHEDULE_CONFIRM_CALLBACK_DATA = "schedule:confirm";
 export const SCHEDULE_CANCEL_CALLBACK_DATA = "schedule:cancel";
 export const SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX = "scheduled:page:";
 export const SCHEDULED_TASK_SELECTION_CANCEL_CALLBACK_DATA = "scheduled:cancel";
+export const SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX = "scheduled:view:select:";
 export const SCHEDULED_TASK_UNSCHEDULE_SELECT_CALLBACK_PREFIX = "scheduled:unschedule:select:";
 export const SCHEDULED_TASK_RUN_SELECT_CALLBACK_PREFIX = "scheduled:run:select:";
 export const SCHEDULED_TASK_UNSCHEDULE_CONFIRM_CALLBACK_PREFIX = "scheduled:unschedule:confirm:";
 export const SCHEDULED_TASK_RUN_CONFIRM_CALLBACK_PREFIX = "scheduled:run:confirm:";
 const SCHEDULED_TASK_SELECTION_PAGE_SIZE = 5;
 
-type ScheduledTaskMenuAction = "unschedule" | "runscheduled";
+type ScheduledTaskMenuAction = "schedules" | "unschedule" | "runscheduled";
+type ScheduledTaskConfirmationAction = Exclude<ScheduledTaskMenuAction, "schedules">;
 
 interface PendingRenameState {
 	promptMessageId: number;
@@ -371,7 +372,12 @@ export class TelegramBotApp {
 
 		this.bot.command("schedules", async (ctx) => {
 			await this.runWithErrorHandling(ctx, async () => {
-				await ctx.reply(formatScheduledTasksText(await this.scheduler.listTasks()));
+				const popup = buildScheduledTaskSelectionPopup(await this.scheduler.listTasks(), "schedules");
+				if (popup.keyboard) {
+					await ctx.reply(popup.text, popup.keyboard);
+					return;
+				}
+				await ctx.reply(popup.text);
 			});
 		});
 
@@ -397,7 +403,7 @@ export class TelegramBotApp {
 	});
 });
 
-		this.bot.action(new RegExp(`^${SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX}(unschedule|runscheduled):(\\d+)$`), async (ctx) => {
+		this.bot.action(new RegExp(`^${SCHEDULED_TASK_SELECTION_PAGE_CALLBACK_PREFIX}(schedules|unschedule|runscheduled):(\\d+)$`), async (ctx) => {
 	await this.runWithErrorHandling(ctx, async () => {
 		const action = toScheduledTaskMenuAction(ctx.match[1]);
 		const pageIndex = parseScheduledTaskSelectionPageIndex(ctx.match[2]);
@@ -408,6 +414,23 @@ export class TelegramBotApp {
 			await ctx.editMessageText(popup.text);
 		}
 		await ctx.answerCbQuery();
+	});
+});
+
+this.bot.action(new RegExp(`^${SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX}([a-f0-9]+)$`), async (ctx) => {
+	await this.runWithErrorHandling(ctx, async () => {
+		const task = requireScheduledTaskSelection(await this.scheduler.listTasks(), ctx.match[1]);
+		const callbackMessage = ctx.callbackQuery.message;
+		const chatId = callbackMessage?.chat.id;
+		const messageId = callbackMessage?.message_id;
+		if (chatId === undefined || !messageId) {
+			throw new Error("Could not continue the scheduled task flow.");
+		}
+
+		await this.dismissInlineKeyboard(chatId, messageId);
+		await ctx.answerCbQuery("Prompt posted.");
+		const client = createTelegramMessageClient(ctx.telegram);
+		await sendStandaloneTelegramText(client, chatId, task.prompt, "plain", this.config.telegramChunkSize);
 	});
 });
 
@@ -1068,7 +1091,15 @@ function toExistingSessionScheduledTaskTarget(session: SessionCatalogEntry) {
 }
 
 function toScheduledTaskMenuAction(value: string | undefined): ScheduledTaskMenuAction {
-	return value === "runscheduled" ? "runscheduled" : "unschedule";
+	if (value === "runscheduled") {
+		return "runscheduled";
+	}
+
+	if (value === "schedules") {
+		return "schedules";
+	}
+
+	return "unschedule";
 }
 
 function buildScheduledTaskSelectionKeyboard(tasks: ScheduledTask[], action: ScheduledTaskMenuAction, pageIndex = 0) {
@@ -1094,7 +1125,7 @@ function buildScheduledTaskSelectionKeyboard(tasks: ScheduledTask[], action: Sch
 	return Markup.inlineKeyboard(rows);
 }
 
-function buildScheduledTaskConfirmationKeyboard(action: ScheduledTaskMenuAction, task: ScheduledTask) {
+function buildScheduledTaskConfirmationKeyboard(action: ScheduledTaskConfirmationAction, task: ScheduledTask) {
 	return Markup.inlineKeyboard([
 		[
 			Markup.button.callback(
@@ -1191,12 +1222,16 @@ function buildScheduledTaskButtonLabel(task: ScheduledTask): string {
 }
 
 function getScheduledTaskSelectionCallbackPrefix(action: ScheduledTaskMenuAction): string {
+	if (action === "schedules") {
+		return SCHEDULED_TASK_VIEW_SELECT_CALLBACK_PREFIX;
+	}
+
 	return action === "runscheduled"
 		? SCHEDULED_TASK_RUN_SELECT_CALLBACK_PREFIX
 		: SCHEDULED_TASK_UNSCHEDULE_SELECT_CALLBACK_PREFIX;
 }
 
-function getScheduledTaskConfirmationCallbackPrefix(action: ScheduledTaskMenuAction): string {
+function getScheduledTaskConfirmationCallbackPrefix(action: ScheduledTaskConfirmationAction): string {
 	return action === "runscheduled"
 		? SCHEDULED_TASK_RUN_CONFIRM_CALLBACK_PREFIX
 		: SCHEDULED_TASK_UNSCHEDULE_CONFIRM_CALLBACK_PREFIX;

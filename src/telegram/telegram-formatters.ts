@@ -192,7 +192,7 @@ export function formatScheduledTasksText(tasks: ScheduledTask[]): string {
 }
 
 export interface FormatScheduledTaskSelectionTextOptions {
-	action: "unschedule" | "runscheduled";
+	action: "schedules" | "unschedule" | "runscheduled";
 	pageIndex?: number;
 	pageCount?: number;
 	pageStartIndex?: number;
@@ -206,12 +206,21 @@ export function formatScheduledTaskSelectionText(
 		return "No scheduled tasks.";
 	}
 
-	const actionText = options.action === "unschedule" ? "delete" : "run now";
+	const actionText =
+		options.action === "schedules"
+			? "view"
+			: options.action === "unschedule"
+				? "delete"
+				: "run now";
 	const title =
 		options.pageCount && options.pageCount > 1
 			? `Select a scheduled task to ${actionText} (page ${(options.pageIndex ?? 0) + 1}/${options.pageCount}):`
 			: `Select a scheduled task to ${actionText}:`;
 	const pageStartIndex = options.pageStartIndex ?? 0;
+	const guidance =
+		options.action === "schedules"
+			? "Tap a button below to post the saved prompt or cancel."
+			: "Tap a button below to continue or cancel.";
 	return [
 		title,
 		...tasks.flatMap((task, index) => [
@@ -219,7 +228,7 @@ export function formatScheduledTaskSelectionText(
 			`   ${truncate(task.prompt, 100)}`,
 		]),
 		"",
-		"Tap a button below to continue or cancel.",
+		guidance,
 	].join("\n");
 }
 
